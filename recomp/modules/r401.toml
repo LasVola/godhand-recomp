@@ -1,0 +1,24 @@
+[general]
+# r401.rel (SNR2 DLL, "..\PS2_EE_Release\r401.elf") statically linked at 0x00799080 by
+#   python -I tools/snr2/gen_modules.py r401   (= tools/snr2/snr2.py emit r401 --base 0x799080)
+# and recompiled by 'python -I build.py modules r401' into build/snr2/gen/r401, then packed into
+# generated_modules/r401/ (never generated/). Class 'room': slot heap 0x799000/0xF000 (cRelSys_loadSlot ReadAlloc, ra 0x2BE5A0, redirected from heap D 0x754220).
+# The generated code is valid only at that base (literal PCs/return addresses), checked at link time by
+# src/godhand/function_hooks.cpp (name + base + code sha256).
+# Paths are relative to this file; build.py modules makes them absolute.
+input = "../../build/snr2/out/r401/r401.elf"
+output = "../../build/snr2/gen/r401"
+single_file_output = false
+output_worker_threads = 4
+# 10 routine starts from snr2.py. Authoritative.
+ghidra_output = "../../build/snr2/out/r401/r401_functions.csv"
+ghidra_map_merge = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+auto_stub_by_name = false
+direct_tail_calls = false
+skip = []
+stubs = []
+# No runtime relocations: every import resolves to a boot .sndata export at static-link time
+# (r401_runtime_relocations.csv has 0 rows).

@@ -1,0 +1,40 @@
+[general]
+# God Hand (USA, SLUS-21503). Modeled on the Urban Reign port's recomp/urban.toml. build.py generate rewrites input and
+# output to build/ and makes ghidra_output and runtime_relocations absolute (relative to this folder).
+input = "../build/SLUS_215.03"
+output = "../generated"
+single_file_output = false
+output_worker_threads = 8
+# Function boundaries (port_prep/boundaries, build_boundaries.py + validate_boundaries.py, 10,553 rows). Every row has a
+# non-auto name, so every range is authoritative; the recompiler's own discoveries are kept only outside them.
+ghidra_output = "godhand_functions.csv"
+ghidra_map_merge = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+# SDK functions are bound by address to runtime handlers at start-up (src/godhand/hle_bindings.cpp); the CSV carries SDK
+# names that would otherwise be stubbed by name (types.h default is true).
+auto_stub_by_name = false
+# Tail jumps go through the dispatch table, so a replaced (HLE) function is reached by every caller.
+direct_tail_calls = false
+# .data (0x3BBF80, flags WAX) counts as code for the recompiler, which made 46 functions there on the first generate.
+# None is EE code run at its .data address (recomp/godhand_data_section_functions.txt): byte tables (0x3BBF80-0x3C01D8),
+# zero buffers (0x3F86C0-0x3FA1C0), a "3100" version string (0x3FAE3C), GS/VIF/DMA packet data (0x3FA1F8, 0x3FD280,
+# 0x3FDD40), a 60-byte struct array (0x3FC7B8), and the libkernl kernel-patch blobs that InitExecPS2 (0x3FAF20),
+# InitAlarm (0x3FB6E8) and InitTLBFunctions (0x3FBEC0) copy to 0x80074000/0x80076000/0x80075000. No jal or j reaches
+# any of them. Skipped by address: each becomes a TODO_NAMED stub (a warning and a return if it were ever called).
+skip = [
+    "0x003BBF80", "0x003BBFA8", "0x003BBFD0", "0x003BBFF8", "0x003BC200", "0x003BC248",
+    "0x003BC380", "0x003BC3A8", "0x003BC3D0", "0x003BC3F8", "0x003BC5E0", "0x003BC5F8",
+    "0x003BC610", "0x003BC628", "0x003BF958", "0x003BF970", "0x003BF988", "0x003BF9A0",
+    "0x003BFB48", "0x003BFC98", "0x003BFFD0", "0x003BFFE8", "0x003C0000", "0x003C0018",
+    "0x003C0138", "0x003C0160", "0x003C0188", "0x003C01B0", "0x003C01D8", "0x003F86C0",
+    "0x003F8740", "0x003F9740", "0x003F9800", "0x003F9810", "0x003F9840", "0x003F9C80",
+    "0x003FA0C0", "0x003FA1C0", "0x003FA1F8", "0x003FAE3C", "0x003FAF20", "0x003FB6E8",
+    "0x003FBEC0", "0x003FC7B8", "0x003FD280", "0x003FDD40",
+]
+stubs = []
+# The 282 boot-ELF .text sites God Hand's SNR2 loader patches (82 j26, 100 hi16, 100 lo16 in 25 functions); read from
+# guest RAM at run time (port_prep/runtime-relocs). The 208 R_MIPS_32 .data slots (godhand_data_import_slots.csv, kind
+# w32) are deliberately NOT listed: the recompiler accepts only j26/hi16/lo16 and the slots stay in guest RAM.
+runtime_relocations = "godhand_runtime_relocations.csv"

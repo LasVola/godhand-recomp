@@ -1,0 +1,24 @@
+[general]
+# event.rel (SNR2 DLL, "..\PS2_EE_Release\Event.elf") statically linked at 0x007a8080 by
+#   python -I tools/snr2/gen_modules.py event   (= tools/snr2/snr2.py emit event --base 0x7a8080)
+# and recompiled by 'python -I build.py modules event' into build/snr2/gen/event, then packed into
+# generated_modules/event/ (never generated/). Class 'event': slot heap 0x7A8000/0x18000 (LoadResourceEntry_297378 ReadAlloc, ra 0x297410, redirected from heap D).
+# The generated code is valid only at that base (literal PCs/return addresses), checked at link time by
+# src/godhand/function_hooks.cpp (name + base + code sha256).
+# Paths are relative to this file; build.py modules makes them absolute.
+input = "../../build/snr2/out/event/event.elf"
+output = "../../build/snr2/gen/event"
+single_file_output = false
+output_worker_threads = 4
+# 263 routine starts from snr2.py. Authoritative.
+ghidra_output = "../../build/snr2/out/event/event_functions.csv"
+ghidra_map_merge = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+auto_stub_by_name = false
+direct_tail_calls = false
+skip = []
+stubs = []
+# No runtime relocations: every import resolves to a boot .sndata export at static-link time
+# (event_runtime_relocations.csv has 0 rows).

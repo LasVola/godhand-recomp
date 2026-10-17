@@ -1,0 +1,24 @@
+[general]
+# r604.rel (SNR2 DLL, "..\PS2_EE_Release\r604.elf") statically linked at 0x00799080 by
+#   python -I tools/snr2/gen_modules.py r604   (= tools/snr2/snr2.py emit r604 --base 0x799080)
+# and recompiled by 'python -I build.py modules r604' into build/snr2/gen/r604, then packed into
+# generated_modules/r604/ (never generated/). Class 'room': slot heap 0x799000/0xF000 (cRelSys_loadSlot ReadAlloc, ra 0x2BE5A0, redirected from heap D 0x754220).
+# The generated code is valid only at that base (literal PCs/return addresses), checked at link time by
+# src/godhand/function_hooks.cpp (name + base + code sha256).
+# Paths are relative to this file; build.py modules makes them absolute.
+input = "../../build/snr2/out/r604/r604.elf"
+output = "../../build/snr2/gen/r604"
+single_file_output = false
+output_worker_threads = 4
+# 37 routine starts from snr2.py. Authoritative.
+ghidra_output = "../../build/snr2/out/r604/r604_functions.csv"
+ghidra_map_merge = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+auto_stub_by_name = false
+direct_tail_calls = false
+skip = []
+stubs = []
+# No runtime relocations: every import resolves to a boot .sndata export at static-link time
+# (r604_runtime_relocations.csv has 0 rows).

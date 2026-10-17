@@ -1,0 +1,23 @@
+# Game data never goes into this repository
+game/*
+!game/README.md
+*.iso
+*.bin
+*.img
+*.chd
+*.cso
+*.7z
+*.afs
+*.rel
+*.sfd
+*.ps2
+SLUS_*
+# Everything recompiled from the game (translated game code) and build output
+generated/
+generated_modules/
+build/
+out/
+*.gsr
+*.planes
+__pycache__/
+*.pyc

@@ -1,0 +1,48 @@
+start      name            bytes   unh  jal  mat  ptr  eeok  first words
+0x003BBF80 sub_003BBF80       40     0    0    0    0    10  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3bc788; j 0x1c1814; jal 0x2c2824
+0x003BBFA8 sub_003BBFA8       40     1    0    0    0    10  030201FF 0706FF04 0BFF0908 FF0E0D0C | dsra32 zero,v0,7; regimm rt=6 t8; j 0xffc2420
+0x003BBFD0 sub_003BBFD0       40     1    0    0    0    10  05040302 090807FF 0D0CFF0A 11FF0F0E | regimm rt=4 t0; j 0x4201ffc; jal 0x433fc28
+0x003BBFF8 sub_003BBFF8      520    15    0    0    0    16  09080706 0302010A 11100504 0B141312 | j 0x4201c18; movz zero,t8,v0; beq t0,s0,0x3bd414
+0x003BC200 sub_003BC200       72     2    0    0    0    16  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3bca08; j 0x1c1814; jal 0x2c2824
+0x003BC248 sub_003BC248      312     4    0    0    0    16  08070403 FF09FFFF FFFFFF15 1413100F | j 0x1c100c; sd t1,-1(t8); sd ra,-235(ra)
+0x003BC380 sub_003BC380       40     0    0    0    0    10  04030201 1D1C0605 0908071E 0A1B1A19 | bgezl zero,0x3bcb88; bgtz t0,gp,0x3bdb9c; j 0x4201c78
+0x003BC3A8 sub_003BC3A8       40     0    0    0    0    10  FF0201FF 1CFF0504 0807FF1D FF1A19FF | sd v0,511(t8); bgtz a3,ra,0x3bd7c0; j 0x1ffc74
+0x003BC3D0 sub_003BC3D0       40     1    0    0    0    10  05FF0302 1E1DFF06 FF0908FF 0BFF1B1A | regimm rt=1f t7; bgtz s0,sp,0x3bbff0; sd t1,2303(t8)
+0x003BC3F8 sub_003BC3F8      488     6    0    0    0    16  1C121110 08071E1D 1B1A1909 1F0C0B0A | bgtz zero,s2,0x3c083c; j 0x1c7874; blez t8,k0,0x3c2828
+0x003BC5E0 sub_003BC5E0       24     0    0    0    0     6  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3bcde8; j 0x1c1814; jal 0x2c2824
+0x003BC5F8 sub_003BC5F8       24     1    0    0    0     6  030201FF 0706FF04 0BFF0908 FF0E0D0C | dsra32 zero,v0,7; regimm rt=6 t8; j 0xffc2420
+0x003BC610 sub_003BC610       24     1    0    0    0     6  05040302 090807FF 0D0CFF0A 11FF0F0E | regimm rt=4 t0; j 0x4201ffc; jal 0x433fc28
+0x003BC628 sub_003BC628    13104   205    0    0    0    16  09080706 0302010A 11100504 0B141312 | j 0x4201c18; movz zero,t8,v0; beq t0,s0,0x3bda44
+0x003BF958 sub_003BF958       24     1    0    0    0     6  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3c0160; j 0x1c1814; jal 0x2c2824
+0x003BF970 sub_003BF970       24     1    0    0    0     6  FF0201FF 07FF0504 0B0AFF08 FF0E0DFF | sd v0,511(t8); regimm rt=1f ra; j 0xc2bfc20
+0x003BF988 sub_003BF988       24     1    0    0    0     6  05FF0302 0908FF06 FF0C0BFF 11FF0F0E | regimm rt=1f t7; j 0x423fc18; sd t4,3071(t8)
+0x003BF9A0 sub_003BF9A0      424     1    0    0    0    16  07060504 0B0A0908 0F0E0D0C 13121110 | regimm rt=6 t8; j 0xc282420; jal 0xc383430
+0x003BFB48 sub_003BFB48      336     1    0    0    0    16  05040302 0B090807 100F0D0C 15141311 | regimm rt=4 t0; j 0xc24201c; beq zero,t7,0x3c2f84
+0x003BFC98 sub_003BFC98      824     7    0    0    0    16  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3c04a0; j 0x1c1814; jal 0x2c2824
+0x003BFFD0 sub_003BFFD0       24     1    0    0    0     6  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3c07d8; j 0x1c1814; jal 0x2c2824
+0x003BFFE8 sub_003BFFE8       24     1    0    0    0     6  FF0201FF 07FF0504 0B0AFF08 FF0E0DFF | sd v0,511(t8); regimm rt=1f ra; j 0xc2bfc20
+0x003C0000 sub_003C0000       24     1    0    0    0     6  05FF0302 0908FF06 FF0C0BFF 11FF0F0E | regimm rt=1f t7; j 0x423fc18; sd t4,3071(t8)
+0x003C0018 sub_003C0018      288     1    0    0    0    16  07060504 0B0A0908 0F0E0D0C 13121110 | regimm rt=6 t8; j 0xc282420; jal 0xc383430
+0x003C0138 sub_003C0138       40     0    0    0    0    10  04030201 08070605 0C0B0A09 100F0E0D | bgezl zero,0x3c0940; j 0x1c1814; jal 0x2c2824
+0x003C0160 sub_003C0160       40     1    0    0    0    10  030201FF 0706FF04 0BFF0908 FF0E0D0C | dsra32 zero,v0,7; regimm rt=6 t8; j 0xffc2420
+0x003C0188 sub_003C0188       40     1    0    0    0    10  05040302 090807FF 0D0CFF0A 11FF0F0E | regimm rt=4 t0; j 0x4201ffc; jal 0x433fc28
+0x003C01B0 sub_003C01B0       40     0    0    0    0    10  FFFFFFFF 030201FF FFFF0504 0BFFFFFF | sd ra,-1(ra); dsra32 zero,v0,7; sd ra,1284(ra)
+0x003C01D8 sub_003C01D8   230632  1735    0    0    0    16  09080706 FFFFFF0A 1110FFFF FF141312 | j 0x4201c18; sd ra,-246(ra); beq t0,s0,0x3c01e0
+0x003F86C0 sub_003F86C0      128     0    0    1    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F8740 sub_003F8740     4096     0    0    0    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F9740 sub_003F9740      192     0    0    1    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F9800 sub_003F9800       16     0    0    1    0     4  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F9810 sub_003F9810       48     0    0    4    0    12  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F9840 sub_003F9840     1088     0    0    7    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003F9C80 sub_003F9C80     1088     0    0    1    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003FA0C0 sub_003FA0C0      256     0    0    1    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003FA1C0 sub_003FA1C0       56     0    0    8    0    14  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003FA1F8 sub_003FA1F8     3140    36    0    1    0    16  00000002 00000000 00000002 00000000 | srl zero,zero,0; nop; srl zero,zero,0
+0x003FAE3C sub_003FAE3C      228     0    0    2    0    16  30303133 00000000 007867B4 00000000 | andi s0,at,0x3133; nop; special fn=34
+0x003FAF20 sub_003FAF20     1992     0    0    1    0    16  27BDFFE0 24050026 FFB00000 0080802D | addiu sp,sp,-32; addiu a1,zero,38; sd s0,0(sp)
+0x003FB6E8 sub_003FB6E8     2008     3    0    1    0    16  3C028007 0000282D 24436710 00000000 | lui v0,0x8007; daddu a1,zero,zero; addiu v1,v0,26384
+0x003FBEC0 sub_003FBEC0     2296    29    0    1    0    16  3C028007 0000282D 24435300 00000000 | lui v0,0x8007; daddu a1,zero,zero; addiu v1,v0,21248
+0x003FC7B8 sub_003FC7B8     2760    19    0    3    0    16  00000000 00000000 00000000 00000000 | nop; nop; nop
+0x003FD280 sub_003FD280     2752    72    0    3    0    16  00000000 4A360000 10010014 000002FF | nop; cop2 4a360000; beq zero,at,0x3fd2dc
+0x003FDD40 sub_003FDD40    50848   813    0    2    0    16  14000000 030000DA 0200018E 00000000 | bne zero,zero,0x3fdd44; div t8,zero; special fn=e
+functions in .data: 46 total bytes 46

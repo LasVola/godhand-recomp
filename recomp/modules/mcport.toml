@@ -1,0 +1,25 @@
+[general]
+# McPort.rel (SNR2 DLL, "..\PS2_EE_Release\McPort.elf") statically linked at 0x007C0080 by
+#   python -I tools/snr2/gen_modules.py mcport   (= tools/snr2/snr2.py emit mcport --base 0x7c0080)
+# and recompiled by 'python -I build.py modules mcport' into build/snr2/gen/mcport, then packed into
+# generated_modules/mcport/ (never generated/). 0x007C0080 = first allocation in the McPort slot heap 0x7C0000/0x20000,
+# where src/godhand/function_hooks.cpp redirects every cMc_DllLoad read (ra 0x2AE540, heap C 0x754230; round 8; it was
+# 0x01110080, the boot-time heap C base, before). The generated code is valid only at that base (literal PCs/return addresses), checked at link time by
+# src/godhand/function_hooks.cpp (name + base + code sha256).
+# Paths are relative to this file; build.py modules makes them absolute.
+input = "../../build/snr2/out/mcport/mcport.elf"
+output = "../../build/snr2/gen/mcport"
+single_file_output = false
+output_worker_threads = 4
+# 362 routine starts from snr2.py (exports, weak, j26 targets, hi/lo code pointers, 2 w32 pointers). Authoritative.
+ghidra_output = "../../build/snr2/out/mcport/mcport_functions.csv"
+ghidra_map_merge = true
+patch_syscalls = false
+patch_cop0 = false
+patch_cache = false
+auto_stub_by_name = false
+direct_tail_calls = false
+skip = []
+stubs = []
+# No runtime relocations: every McPort import resolves to a boot .sndata export at static-link time
+# (mcport_runtime_relocations.csv has 0 rows).
