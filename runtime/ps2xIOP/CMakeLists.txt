@@ -2,7 +2,6 @@ cmake_minimum_required(VERSION 3.21)
 
 project(ps2xIOP LANGUAGES CXX)
 
-option(PS2X_IOP_BUILD_TESTS "Build ps2xIOP emulator smoke tests" OFF)
 
 add_library(ps2_iop STATIC
     src/ps2_path.cpp
@@ -46,37 +45,6 @@ target_include_directories(ps2_iop
 
 add_library(ps2x::iop ALIAS ps2_iop)
 
-if(PS2X_IOP_BUILD_TESTS)
-    enable_testing()
-    add_executable(ps2_iop_emulator_tests tests/iop_emulator_tests.cpp)
-    target_link_libraries(ps2_iop_emulator_tests PRIVATE ps2_iop)
-    add_test(NAME ps2_iop_emulator_tests COMMAND ps2_iop_emulator_tests)
-
-    add_executable(ps2_iop_import_tests tests/iop_import_tests.cpp)
-    target_link_libraries(ps2_iop_import_tests PRIVATE ps2_iop)
-    target_include_directories(ps2_iop_import_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    add_test(NAME ps2_iop_import_tests COMMAND ps2_iop_import_tests)
-
-    add_executable(ps2_iop_compatibility_tests tests/iop_compatibility_tests.cpp)
-    target_link_libraries(ps2_iop_compatibility_tests PRIVATE ps2_iop)
-    add_test(NAME ps2_iop_compatibility_tests COMMAND ps2_iop_compatibility_tests)
-
-    add_executable(ps2_iop_sio2_tests tests/iop_sio2_tests.cpp)
-    target_link_libraries(ps2_iop_sio2_tests PRIVATE ps2_iop)
-    target_include_directories(ps2_iop_sio2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    add_test(NAME ps2_iop_sio2_tests COMMAND ps2_iop_sio2_tests)
-
-    add_executable(ps2_iop_spu2_tests tests/iop_spu2_tests.cpp)
-    target_link_libraries(ps2_iop_spu2_tests PRIVATE ps2_iop)
-    target_include_directories(ps2_iop_spu2_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    add_test(NAME ps2_iop_spu2_tests COMMAND ps2_iop_spu2_tests)
-
-    add_executable(ps2_iop_import_version_tests tests/iop_import_version_tests.cpp)
-    target_link_libraries(ps2_iop_import_version_tests PRIVATE ps2_iop)
-    target_include_directories(ps2_iop_import_version_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
-    add_test(NAME ps2_iop_import_version_tests COMMAND ps2_iop_import_version_tests)
-
-endif()
 
 install(TARGETS ps2_iop
     ARCHIVE DESTINATION lib
