@@ -36,6 +36,10 @@ All captured from this port running natively on PC.
 
 **At 3x internal resolution (1536x1344):**
 
+| | |
+|---|---|
+| ![Story cutscene close-up at 3x](assets/cutscene-2k-1.jpg) | ![Story cutscene close-up at 3x](assets/cutscene-2k-2.jpg) |
+
 ![Opening cutscene at 3x](assets/cutscene-3x.jpg)
 
 ![A grab with a button prompt at 3x](assets/fight-3x.jpg)
