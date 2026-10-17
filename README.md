@@ -23,6 +23,23 @@ into a Windows program using [PS2Recomp](https://github.com/ran-j/PS2Recomp). Yo
 
 ![Gameplay at 3x internal resolution](assets/gameplay.png)
 
+## Screenshots
+
+All captured from this port running natively on PC.
+
+| | |
+|---|---|
+| ![Title menu](assets/title-menu.jpg) | ![Warning screen](assets/warning-screen.jpg) |
+| Title menu | Opening warning screen |
+| ![Opening cutscene](assets/cutscene-faces.jpg) | ![Saloon fight](assets/saloon-fight.jpg) |
+| Opening cutscene | Fighting inside the saloon |
+
+**At 3x internal resolution (1536x1344):**
+
+![Opening cutscene at 3x](assets/cutscene-3x.jpg)
+
+![A grab with a button prompt at 3x](assets/fight-3x.jpg)
+
 ## Controls
 
 Press **F1** in game (or **Back + Start** on a controller) to change any key or button.
