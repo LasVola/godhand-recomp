@@ -1,5 +1,10 @@
 # God Hand Recompiled
 
+> [!WARNING]
+> **Work in progress. Only partly tested: up to stage (mission) 2.**
+> The later stages, the bosses and the ending have not been played yet and may crash or misbehave.
+> Expect bugs. Bug reports with the log (`build\port\bin\logs\play_last.log`) are welcome.
+
 ![God Hand running natively, the title screen](assets/title-screen.png)
 
 **A native PC port of God Hand (PS2, 2006) made by static recompilation. No emulator.**
@@ -7,13 +12,13 @@
 God Hand was Clover Studio's last game and was only ever released on PS2. This project turns the game's own PS2 code
 into a Windows program using [PS2Recomp](https://github.com/ran-j/PS2Recomp). You supply your own copy of the game.
 
-## Status: Playable
+## Status: work in progress, playable up to stage 2
 
-- **Stages 1 and 2 play.** Fighting, dying and continuing, moving between areas, story cutscenes, the Clover logo
+- **Tested: stages 1 and 2 only.** Fighting, dying and continuing, moving between areas, story cutscenes, the Clover logo
   movie, the casino minigames, **saving and loading** all work in real play.
 - **60 FPS at 3x resolution** (1536x1344, shown 4:3) on a modern GPU. Windowed by default; F11 = full screen.
 - **PC controls:** keyboard, mouse buttons and controllers, all rebindable in game.
-- **Still to check:** the later stages, the bosses, the ending and its movies. All 81 of the game's code overlays are
+- **Not tested yet:** everything after stage 2: the later stages, the bosses, the ending and its movies. All 81 of the game's code overlays are
   converted, but not all have been played yet. Very heavy fights can cause tiny audio gaps.
 
 ![Gameplay at 3x internal resolution](assets/gameplay.png)
