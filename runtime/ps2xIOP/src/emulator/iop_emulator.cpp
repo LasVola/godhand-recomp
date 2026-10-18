@@ -719,6 +719,43 @@ namespace ps2x::iop::detail
             }
         }
 
+        // An EE request reaches the IOP through the SIF interrupt, which the IOP takes only with interrupts enabled. A
+        // batch can end while a thread is inside CpuSuspendIntr (criticalThreadId: runCycles resumes it first), and a
+        // request served right then ran inside that thread's critical section. CRI ADX locks everything with
+        // CpuSuspendIntr: an RNA destroy (DTX urpc 9 -> PSM_Destroy) freed the SJRBF that the PSM output thread's rate
+        // converter (RCV_ExecHndl, under the PSM lock) was using; the thread resumed, SJRBF_GetChunk reported
+        // "E2004090212 : Specified handle is invalid." and CRI's error handler spun forever with interrupts off: IOP
+        // and game frozen after a boss "CHECK" (STATUS 2026-10-17 freeze). Let that thread leave the section (or block)
+        // before the server runs. PS2X_IOP_RPC_WAIT_CRITICAL=0: the old behaviour. PS2X_IOP_CRITICAL_LOG=1: log every
+        // wait (default: the first 4).
+        void finishPreemptedCriticalSection(uint32_t address)
+        {
+            static const bool wait = [] { const char *v = std::getenv("PS2X_IOP_RPC_WAIT_CRITICAL"); return !(v && *v == '0'); }();
+            static const bool logAll = [] { const char *v = std::getenv("PS2X_IOP_CRITICAL_LOG"); return v && *v == '1'; }();
+            if (!wait || criticalThreadId == 0 || interruptsEnabled() || activeCpu != nullptr || callDepth != 0u)
+                return;
+            const int heldId = criticalThreadId;
+            const IopThread *held = kernel.findThread(heldId);
+            const uint32_t heldPc = held ? held->cpu.pc : 0u;
+            const uint64_t start = totalCycles;
+            const uint64_t deadline = totalCycles + kCriticalSectionMaxCycles;
+            while (criticalThreadId != 0 && !interruptsEnabled() && totalCycles < deadline)
+                runCycles(kDefaultSlice);
+            const bool stuck = criticalThreadId != 0 && !interruptsEnabled();
+            ++criticalWaits;
+            if (stuck ? ++criticalStuckLogs > 8u : (!logAll && criticalWaits > 4u))
+                return; // a thread that never leaves (e.g. CRI's error halt) would otherwise log at every request
+            std::ostringstream out;
+            out << "[IOP] EE request to server 0x" << std::hex << address << " waited for thread " << std::dec << heldId
+                << " (pc 0x" << std::hex << heldPc << std::dec << ") to leave CpuSuspendIntr: " << (totalCycles - start)
+                << " cycles" << (stuck ? ", still inside after the cap; the request runs anyway" : "") << " (wait "
+                << criticalWaits << ")";
+            log(stuck ? LogLevel::Warning : LogLevel::Info, out.str());
+        }
+        static constexpr uint64_t kCriticalSectionMaxCycles = kIopClockHz / 500u; // 2 ms of IOP time
+        uint32_t criticalWaits = 0u;
+        uint32_t criticalStuckLogs = 0u;
+
         bool runServerFunction(uint32_t address,
                                uint32_t a0,
                                uint32_t a1,
@@ -735,6 +772,7 @@ namespace ps2x::iop::detail
                 ~CallDepthGuard() { --depth; }
             };
 
+            finishPreemptedCriticalSection(address); // EE requests only (not nested IOP calls)
             const uint32_t depth = callDepth++;
             const CallDepthGuard depthGuard{callDepth};
             // A call that may be left running needs a stack nobody else uses: only an EE request (not nested), with a

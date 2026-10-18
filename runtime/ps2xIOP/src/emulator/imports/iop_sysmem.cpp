@@ -1,5 +1,6 @@
 #include "iop_sysmem.h"
 
+#include "iop_format.h"
 #include "../core/iop_cpu.h"
 #include "../core/iop_memory.h"
 #include "ps2x/iop/iop_host.h"
@@ -55,11 +56,12 @@ namespace ps2x::iop::detail
             else
                 setV0(0xFFFFFFFFu);
             return true;
-        case 14: // Kprintf
+        case 14: // Kprintf(format, ...): arguments substituted (iop_format.h)
         {
-            const std::string format = m_memory.readString(a0, 512u);
-            m_host.log(LogLevel::Info, std::string("[IOP Kprintf] ") + format);
-            setV0(static_cast<uint32_t>(format.size()));
+            IopVarArgs args(m_memory, cpu, 1u);
+            const std::string text = formatIopString(m_memory, m_memory.readString(a0, 512u), args);
+            m_host.log(LogLevel::Info, std::string("[IOP Kprintf] ") + text);
+            setV0(static_cast<uint32_t>(text.size()));
             return true;
         }
         case 15:

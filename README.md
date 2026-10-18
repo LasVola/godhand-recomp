@@ -4,6 +4,10 @@
 > **Work in progress. Only partly tested: up to stage (mission) 2.**
 > The later stages, the bosses and the ending have not been played yet and may crash or misbehave.
 > Expect bugs. Bug reports with the log (`build\port\bin\logs\play_last.log`) are welcome.
+>
+> **Known freeze:** pressing ○ **CHECK** on a defeated boss (seen in stage 1) froze the game. The cause was a bug in
+> the port's IOP/sound-driver emulation: a sound was stopped while the CRI driver was inside a protected section.
+> A fix is included, but it has **not yet been confirmed in play**. If it still freezes there, please report it.
 
 ![God Hand running natively, the title screen](assets/title-screen.png)
 
