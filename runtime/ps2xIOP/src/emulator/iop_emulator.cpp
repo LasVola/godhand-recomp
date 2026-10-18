@@ -728,32 +728,92 @@ namespace ps2x::iop::detail
         // and game frozen after a boss "CHECK" (STATUS 2026-10-17 freeze). Let that thread leave the section (or block)
         // before the server runs. PS2X_IOP_RPC_WAIT_CRITICAL=0: the old behaviour. PS2X_IOP_CRITICAL_LOG=1: log every
         // wait (default: the first 4).
-        void finishPreemptedCriticalSection(uint32_t address)
+        //
+        // Priority (sweep 2026-10-17, IOPR-1): with interrupts on, the SIF interrupt only makes the server thread ready;
+        // it runs once it is the most urgent ready thread. A thread of higher priority that a batch end left part-way
+        // through unlocked work (CRI's PSM mixer, PSMOUT prio 39, uses the channel SJRBFs with no lock) runs first, so
+        // a DTX urpc 9 destroy (server prio 48) can no longer free a buffer under a running mix. Equal priority does
+        // not wait (strict <). The IOP time run here is work those threads would run in the next batch anyway, so it
+        // stays charged to the EE clock (no eeSyncCycle credit as in the blocked path below: that would let the IOP,
+        // and the audio it produces, run ahead of the EE by every wait).
+        void finishPreemptedCriticalSection(uint32_t address, uint32_t priority)
         {
             static const bool wait = [] { const char *v = std::getenv("PS2X_IOP_RPC_WAIT_CRITICAL"); return !(v && *v == '0'); }();
             static const bool logAll = [] { const char *v = std::getenv("PS2X_IOP_CRITICAL_LOG"); return v && *v == '1'; }();
-            if (!wait || criticalThreadId == 0 || interruptsEnabled() || activeCpu != nullptr || callDepth != 0u)
+            if (!wait || activeCpu != nullptr || callDepth != 0u)
                 return;
-            const int heldId = criticalThreadId;
-            const IopThread *held = kernel.findThread(heldId);
+            const auto heldInside = [this] { return criticalThreadId != 0 && !interruptsEnabled(); };
+            const auto urgentReady = [this, priority]
+            { return kernel.bestReadyPriority(totalCycles) < static_cast<int32_t>(priority); };
+            const bool critical = heldInside();
+            if (!critical && !urgentReady())
+                return;
+            const int heldId = critical ? criticalThreadId : 0;
+            const IopThread *held = heldId != 0 ? kernel.findThread(heldId) : nullptr;
             const uint32_t heldPc = held ? held->cpu.pc : 0u;
             const uint64_t start = totalCycles;
             const uint64_t deadline = totalCycles + kCriticalSectionMaxCycles;
-            while (criticalThreadId != 0 && !interruptsEnabled() && totalCycles < deadline)
+            while ((heldInside() || urgentReady()) && totalCycles < deadline)
                 runCycles(kDefaultSlice);
-            const bool stuck = criticalThreadId != 0 && !interruptsEnabled();
+            const bool stuckCritical = heldInside();
+            const bool stuck = stuckCritical || urgentReady();
             ++criticalWaits;
+            if (critical)
+                ++criticalSectionWaits;
             if (stuck ? ++criticalStuckLogs > 8u : (!logAll && criticalWaits > 4u))
                 return; // a thread that never leaves (e.g. CRI's error halt) would otherwise log at every request
             std::ostringstream out;
-            out << "[IOP] EE request to server 0x" << std::hex << address << " waited for thread " << std::dec << heldId
-                << " (pc 0x" << std::hex << heldPc << std::dec << ") to leave CpuSuspendIntr: " << (totalCycles - start)
-                << " cycles" << (stuck ? ", still inside after the cap; the request runs anyway" : "") << " (wait "
-                << criticalWaits << ")";
+            out << "[IOP] EE request to server 0x" << std::hex << address << std::dec << " (prio " << priority << ") waited ";
+            if (critical)
+                out << "for thread " << heldId << " (pc 0x" << std::hex << heldPc << std::dec << ") to leave CpuSuspendIntr";
+            else
+                out << "for higher-priority ready threads";
+            out << ": " << (totalCycles - start) << " cycles";
+            if (stuckCritical)
+            {
+                const IopThread *now = kernel.findThread(criticalThreadId);
+                out << ", thread " << criticalThreadId << " still inside after the cap (pc 0x" << std::hex
+                    << (now ? now->cpu.pc : 0u) << std::dec << describeCriHalt(now ? now->cpu.pc : 0u)
+                    << "); the request runs anyway";
+            }
+            else if (stuck)
+                out << ", a thread of priority " << kernel.bestReadyPriority(totalCycles)
+                    << " still ready after the cap; the request runs anyway";
+            out << " (wait " << criticalWaits << ", in a critical section " << criticalSectionWaits << ")";
             log(stuck ? LogLevel::Warning : LogLevel::Info, out.str());
+        }
+
+        // Where a held thread is: IRX id + offset, and whether it spins on a jump to itself. CRI ADX 9.67's SJ error
+        // handler ends in such a loop at IRX offset 0xb57c (God Hand: IRX id of "CRI ADX Driver", base 0x2c800) after
+        // printing e.g. "E2004090212 : Specified handle is invalid." with interrupts off (sweep IOPR-6).
+        std::string describeCriHalt(uint32_t pc) const
+        {
+            std::ostringstream out;
+            const uint32_t physical = IopMemory::physicalAddress(pc);
+            for (const auto &[id, module] : modules)
+            {
+                if (physical < module.base || physical >= module.base + module.size)
+                    continue;
+                out << " = IRX id " << id << " base 0x" << std::hex << module.base << " +0x" << (physical - module.base)
+                    << std::dec;
+                break;
+            }
+            for (const uint32_t at : {physical, physical - 4u})
+            {
+                if (at + 4u > IopMemory::RamSize)
+                    continue;
+                const uint32_t op = memory.read32(at);
+                if ((op >> 26) == 2u && ((((at + 4u) & 0xF0000000u) | ((op & 0x03FFFFFFu) << 2)) == at))
+                {
+                    out << ", spinning on a jump to itself (halt loop)";
+                    break;
+                }
+            }
+            return out.str();
         }
         static constexpr uint64_t kCriticalSectionMaxCycles = kIopClockHz / 500u; // 2 ms of IOP time
         uint32_t criticalWaits = 0u;
+        uint32_t criticalSectionWaits = 0u;
         uint32_t criticalStuckLogs = 0u;
 
         bool runServerFunction(uint32_t address,
@@ -772,7 +832,7 @@ namespace ps2x::iop::detail
                 ~CallDepthGuard() { --depth; }
             };
 
-            finishPreemptedCriticalSection(address); // EE requests only (not nested IOP calls)
+            finishPreemptedCriticalSection(address, priority); // EE requests only (not nested IOP calls)
             const uint32_t depth = callDepth++;
             const CallDepthGuard depthGuard{callDepth};
             // A call that may be left running needs a stack nobody else uses: only an EE request (not nested), with a
@@ -996,6 +1056,34 @@ namespace ps2x::iop::detail
         }
         uint64_t nextThreadLog = 0u;
 
+        // Log only (sweep L1): a thread that keeps interrupts off for 2 s of IOP time has stopped the whole IOP (no
+        // interrupt, no other thread runs; e.g. CRI's SJ error halt after "E2004090212"). Before this nothing in the
+        // log said which thread it was, and PS2X_IOP_THREAD_LOG goes quiet in exactly this state.
+        void noteLongCriticalSection(const IopThread &thread, uint64_t sliceStart)
+        {
+            if (criticalHeldId != thread.id)
+            {
+                criticalHeldId = thread.id;
+                criticalHeldSince = sliceStart;
+                criticalHeldLogged = false;
+                return;
+            }
+            if (criticalHeldLogged || totalCycles - criticalHeldSince < kServerCallMaxCycles || criticalHeldLogs >= 4u)
+                return;
+            criticalHeldLogged = true;
+            ++criticalHeldLogs;
+            std::ostringstream out;
+            out << "[IOP] thread " << thread.id << " (prio " << thread.priority << ", entry 0x" << std::hex << thread.entry
+                << ") has kept interrupts off (CpuSuspendIntr) for " << std::dec << (totalCycles - criticalHeldSince)
+                << " cycles: no IOP interrupt or other IOP thread can run; pc 0x" << std::hex << thread.cpu.pc << " ra 0x"
+                << thread.cpu.gpr[31] << std::dec << describeCriHalt(thread.cpu.pc);
+            log(LogLevel::Error, out.str());
+        }
+        int criticalHeldId = 0;
+        uint64_t criticalHeldSince = 0u;
+        bool criticalHeldLogged = false;
+        uint32_t criticalHeldLogs = 0u;
+
         void runCycles(uint64_t cycles) noexcept
         {
             try
@@ -1045,8 +1133,15 @@ namespace ps2x::iop::detail
                     if (!interruptsEnabled())
                     {
                         if (const IopThread *ran = kernel.findThread(ranId); ran && ran->state == IopThreadState::Ready)
+                        {
                             criticalThreadId = ranId;
+                            noteLongCriticalSection(*ran, before);
+                        }
+                        else
+                            criticalHeldId = 0;
                     }
+                    else
+                        criticalHeldId = 0;
                     if (totalCycles == before)
                         ++totalCycles;
                 }
@@ -1265,6 +1360,24 @@ namespace ps2x::iop::detail
                 ar.section(fourcc("IVBL"));
                 vblank.serialize(ar);
             }
+            // The thread a batch end left inside CpuSuspendIntr (sweep IOPR-2). Threads are saved Ready, so without it a
+            // load let interrupt work, other threads and EE requests run inside that section (the CRI corruption class
+            // of the boss-CHECK freeze), and the old session's id stayed in place. States without ICRT: none held.
+            if constexpr (Ar::kLoading)
+            {
+                criticalThreadId = 0;
+                if (ar.nextSectionIs(fourcc("ICRT")))
+                {
+                    ar.section(fourcc("ICRT"));
+                    field(ar, criticalThreadId);
+                }
+                criticalHeldId = 0;
+            }
+            else
+            {
+                ar.section(fourcc("ICRT"));
+                field(ar, criticalThreadId);
+            }
             if constexpr (Ar::kLoading)
             {
                 eeSyncCycle = totalCycles;
@@ -1360,7 +1473,7 @@ namespace ps2x::iop::detail
 
     bool IopEmulator::hasPendingRpc() const noexcept
     {
-        return !m_impl->pendingServerCalls.empty();
+        return !m_impl->pendingServerCalls.empty() || m_impl->rpc.hasEeRpcInFlight();
     }
 
     bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept

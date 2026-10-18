@@ -30,10 +30,31 @@
 #include <unistd.h>
 #endif
 
+// raylib reports Caps Lock and Num Lock as held for as long as the lock light is on (GLFW_LOCK_KEY_MODS,
+// rcore_desktop_glfw.c KeyCallback), so a button bound to them stayed held. Sweep 2026-10-17 CR-1: read the physical
+// key instead. (The first version passed raylib's GetWindowHandle() - an HWND on Windows - to glfwGetKey, which expects a
+// GLFWwindow*: undefined behaviour. Replaced by the Win32 async key state, gated by window focus; no windows.h here
+// because its macros clash with raylib's names.)
+#if defined(_WIN32)
+extern "C" __declspec(dllimport) short __stdcall GetAsyncKeyState(int vKey);
+#endif
+
 namespace ps2_host_input
 {
     namespace
     {
+        bool lockKeyDown(int code)
+        {
+#if defined(_WIN32)
+            if (!IsWindowFocused())
+                return false;
+            const int vk = code == KEY_CAPS_LOCK ? 0x14 /* VK_CAPITAL */ : code == KEY_NUM_LOCK ? 0x90 /* VK_NUMLOCK */ : 0;
+            return vk != 0 && (GetAsyncKeyState(vk) & 0x8000) != 0;
+#else
+            return IsKeyDown(code);
+#endif
+        }
+
         using ps2x::iop::PadInputState;
         using ps2x::iop::PadPressure;
         namespace PadButton = ps2x::iop::PadButton;
@@ -1151,6 +1172,8 @@ namespace ps2_host_input
                     return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ? 1.0f : 0.0f;
                 if (element.code == kAnyAlt)
                     return IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT) ? 1.0f : 0.0f;
+                if (element.code == KEY_CAPS_LOCK || element.code == KEY_NUM_LOCK)
+                    return lockKeyDown(element.code) ? 1.0f : 0.0f;
                 return IsKeyDown(element.code) ? 1.0f : 0.0f;
             case Source::Pointer:
                 // With the mouse camera on, only while the mouse is captured (the click that captures it is skipped).

@@ -23,7 +23,7 @@ SNR2 = os.path.join(HERE, "snr2.py")
 REL = os.path.join(PORT, "build", "snr2", "rel")
 OUT = os.path.join(PORT, "build", "snr2", "out")
 TOMLS = os.path.join(PORT, "recomp", "modules")
-LOW = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+LOW = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0) if os.environ.get("GODHAND_LOW_PRIORITY") == "1" else 0
 
 ROOM_SLOT_HEAP, ROOM_SLOT_SIZE = 0x00799000, 0xF000
 EVENT_SLOT_HEAP, EVENT_SLOT_SIZE = 0x007A8000, 0x18000

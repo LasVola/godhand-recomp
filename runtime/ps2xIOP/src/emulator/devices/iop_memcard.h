@@ -31,7 +31,14 @@ namespace ps2x::iop::detail
         void serialize(Ar &ar)
         {
             ps2x::state::fields(ar, m_terminator, m_transferAddress);
+            // A savestate restores all IOP RAM, MCMAN's directory/FAT cache included, but not the card file. After a
+            // load the card is gone for MCMAN's own retry count (5 failed probes 0x11, mcman 0x2b20-0x2b70 `slti 5`), as if
+            // it had been pulled and put back: MCMAN then reports a changed card, drops its cache and re-reads it,
+            // instead of writing a newer card through a stale cache (sweep EE-SILENT-1). Not saved itself.
+            if constexpr (Ar::kLoading)
+                m_absentProbes = kSwapAbsentProbes;
         }
+        static constexpr uint32_t kSwapAbsentProbes = 5u;
 
     private:
         bool open();
@@ -46,5 +53,7 @@ namespace ps2x::iop::detail
         std::fstream m_file;
         uint8_t m_terminator = kTerminatorReady;
         uint64_t m_transferAddress = 0u;
+        uint32_t m_absentProbes = 0u;   // after a savestate load: probes (0x11) still to fail; every card command fails until then
+        uint32_t m_ioErrors = 0u;       // host file errors logged so far (capped)
     };
 }

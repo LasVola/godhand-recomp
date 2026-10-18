@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdio>
 #include <system_error>
 
 namespace ps2x::iop::detail
@@ -48,7 +49,16 @@ namespace ps2x::iop::detail
     bool VirtualMemoryCard::present()
     {
         if (!m_opened)
+        {
             m_available = open();
+            // Log only (sweep L7): an existing card file that cannot be used looked like an empty slot with no word.
+            std::error_code error;
+            if (!m_available && !m_path.empty() && std::filesystem::exists(m_path, error))
+                std::fprintf(stderr, "[SIO2] ERROR: memory card %s exists but cannot be used (size %llu, need %llu, or locked): slot empty\n",
+                             m_path.string().c_str(),
+                             static_cast<unsigned long long>(std::filesystem::file_size(m_path, error)),
+                             static_cast<unsigned long long>(kImageSize));
+        }
         return m_available;
     }
 
@@ -100,6 +110,13 @@ namespace ps2x::iop::detail
         m_file.seekp(static_cast<std::streamoff>(address));
         m_file.write(reinterpret_cast<const char *>(source), static_cast<std::streamsize>(available));
         m_file.flush();
+        // Log only (sweep L7): the game still gets its ACK, as before, but a failed host write is no longer silent.
+        if (!m_file && m_ioErrors < 8u)
+        {
+            ++m_ioErrors;
+            std::fprintf(stderr, "[SIO2] ERROR: memory card %s: host write of %zu bytes at 0x%llx failed\n",
+                         m_path.string().c_str(), available, static_cast<unsigned long long>(address));
+        }
     }
 
     void VirtualMemoryCard::eraseBlock(uint64_t address)
@@ -112,6 +129,13 @@ namespace ps2x::iop::detail
     {
         if (command.size() < 2u || command[0] != kDeviceMemoryCard || !present())
             return 0u;
+        if (m_absentProbes != 0u) // card pulled after a savestate load (see serialize): no response, like an empty slot
+        {
+            if (command[1] == kProbe && --m_absentProbes == 0u)
+                std::fprintf(stderr, "[SIO2] memory card %s: back after a savestate load (MCMAN re-reads it)\n",
+                             m_path.filename().string().c_str());
+            return 0u;
+        }
 
         size_t cursor = 2u;
         auto next = [&]() -> uint8_t

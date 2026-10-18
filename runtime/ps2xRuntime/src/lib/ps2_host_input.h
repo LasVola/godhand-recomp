@@ -42,6 +42,7 @@ namespace ps2_host_input
         };
         [[nodiscard]] const std::string &path(); // empty: no file, edits last until the game closes
         [[nodiscard]] bool dirty();
+        [[nodiscard]] const std::string &fileError(); // why the file could not be read (empty: it was read)
         [[nodiscard]] bool envOverride(uint32_t pad); // PS2X_PAD<n> in the environment wins over the file
         [[nodiscard]] std::vector<std::string> bindings(uint32_t pad, std::string_view key);
         void setBindings(uint32_t pad, std::string_view key, std::vector<std::string> list); // live at once, unsaved

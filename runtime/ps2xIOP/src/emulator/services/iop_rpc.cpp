@@ -250,6 +250,7 @@ namespace ps2x::iop::detail
                 });
             if (!queued)
                 return fail("EE server function not callable");
+            ++m_eeRpcInFlight; // serviceEeRpcCompletions takes it back off (every queued call pushes one completion)
             if (++m_eeRpcCalls <= 16u)
             {
                 char line[224];
@@ -543,6 +544,9 @@ namespace ps2x::iop::detail
                 m_host.log(LogLevel::Warning, "[IOP] sceSifCallRpc to an EE server: the EE call did not run; receive buffer unchanged");
             if (completion.threadId != 0)
                 m_kernel.hostResume(completion.threadId);
+            for (uint32_t n = m_eeRpcInFlight.load(); n != 0u && !m_eeRpcInFlight.compare_exchange_weak(n, n - 1u);)
+            {
+            }
         }
     }
 

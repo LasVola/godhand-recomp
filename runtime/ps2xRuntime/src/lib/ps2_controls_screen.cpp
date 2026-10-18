@@ -101,6 +101,8 @@ namespace ps2x::controls
         int g_col = 0;
         std::string g_status;
         Clock::time_point g_captureStart{};
+        int g_pendingPadDevice = -1; // Controller column: Back or Start pressed while capturing, recorded on release
+        int g_pendingPadButton = 0;
 
         // Controller state of the previous tick (edges), focused window only.
         struct PadSnapshot
@@ -198,6 +200,8 @@ namespace ps2x::controls
                 return "PS2X_PAD1 is set in the environment: the game uses those bindings; edits here go to the file only.";
             if (pc::path().empty())
                 return "No controls file set: changes last until the game closes.";
+            if (!pc::fileError().empty()) // sweep CR-6: the screen shows defaults then, and a save replaces the file
+                return pc::fileError() + ": showing the default layout; saving here replaces that file.";
             return {};
         }
 
@@ -331,8 +335,10 @@ namespace ps2x::controls
         {
             g_capture = true;
             g_captureStart = Clock::now();
+            g_pendingPadDevice = -1;
             setStatus(g_col < kKeyColumns ? "Press a key or mouse button for " + rowLabel(g_row) + "  (Esc cancels)"
-                                          : "Press a controller button or move a stick/trigger for " + rowLabel(g_row) + "  (Esc cancels)");
+                                          : "Press a controller button or move a stick/trigger for " + rowLabel(g_row) +
+                                                "  (Back+Start or Esc cancels)");
         }
 
         void command(Command cmd, bool drawable, bool fromPad)
@@ -418,16 +424,33 @@ namespace ps2x::controls
                 return;
             }
             using namespace ps2_host_gamepads;
+            // Back+Start (the close gesture) cancels here. Back and Start alone are recorded on release, so pressing
+            // the gesture no longer binds Back or Start over the cell's controller button (sweep CR-3); another input
+            // while one of them is held records the held one (the first press wins).
+            if (chordDown(now))
+                return cancelCapture("Cancelled.");
+            if (g_pendingPadDevice >= 0 && !now.buttons[buttonSlot(g_pendingPadDevice, g_pendingPadButton)])
+                return captured(pc::padButtonBinding(g_pendingPadDevice, g_pendingPadButton));
             for (int device = 0; device < kMaxDevices; ++device)
             {
                 for (int b = 0; b < ButtonCount; ++b)
                     if (b != Guide && now.buttons[buttonSlot(device, b)] && !g_prevPad.buttons[buttonSlot(device, b)])
-                        return captured(pc::padButtonBinding(device, b));
+                    {
+                        if (g_pendingPadDevice >= 0)
+                            return captured(pc::padButtonBinding(g_pendingPadDevice, g_pendingPadButton));
+                        if (b != Back && b != Start)
+                            return captured(pc::padButtonBinding(device, b));
+                        g_pendingPadDevice = device;
+                        g_pendingPadButton = b;
+                    }
                 for (int a = 0; a < AxisCount; ++a)
                     for (bool negative : {false, true})
                         if (now.axes[axisSlot(device, a, negative)] && !g_prevPad.axes[axisSlot(device, a, negative)])
-                            return captured(pc::padAxisBinding(device, a, negative));
+                            return captured(g_pendingPadDevice >= 0 ? pc::padButtonBinding(g_pendingPadDevice, g_pendingPadButton)
+                                                                    : pc::padAxisBinding(device, a, negative));
             }
+            if (g_pendingPadDevice >= 0)
+                return; // waiting for the release (or the second half of the gesture)
             if (Clock::now() - g_captureStart > std::chrono::seconds(10))
                 cancelCapture("No controller input for 10 s: cancelled.");
         }

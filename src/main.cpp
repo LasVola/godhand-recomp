@@ -551,9 +551,14 @@ int main(int argc, char *argv[])
     {
         const char *controls = std::getenv("GODHAND_CONTROLS_FILE");
         const fs::path controlsPath = controls && *controls ? fs::path(controls) : exeDir / "controls.ini";
-        if (envFlag("GODHAND_CONTROLS_SELFTEST", false) && !controlsFileFromEnvironment)
+        std::error_code sameError;
+        const fs::path playerControls = exeDir / "controls.ini";
+        const bool playerFile = fs::exists(controlsPath, sameError) && fs::exists(playerControls, sameError) &&
+                                fs::equivalent(controlsPath, playerControls, sameError);
+        if (envFlag("GODHAND_CONTROLS_SELFTEST", false) && (!controlsFileFromEnvironment || playerFile))
         {
-            GH_WARN(Boot, "GODHAND_CONTROLS_SELFTEST ignored: it needs GODHAND_CONTROLS_FILE=<scratch file> in the environment");
+            GH_WARN(Boot, "GODHAND_CONTROLS_SELFTEST ignored: it needs GODHAND_CONTROLS_FILE=<scratch file> in the environment"
+                          " (not the player's controls.ini)");
             setEnv("GODHAND_CONTROLS_SELFTEST", "0");
         }
         GH_INFO(Boot, "controls file: " << controlsPath.string());

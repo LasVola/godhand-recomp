@@ -7,6 +7,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <atomic>
 #include <mutex>
 #include <optional>
 #include <unordered_map>
@@ -114,11 +115,16 @@ namespace ps2x::iop::detail
         // IOP thread side of an IOP -> EE call: copies finished EE replies into IOP RAM and readies the waiting threads.
         void serviceEeRpcCompletions();
         [[nodiscard]] bool hasEeRpcCompletions() noexcept;
+        // IOP -> EE calls sent and not yet serviced (sweep CR-11): a savestate must not be taken then, because the
+        // reply (and the resume of a mode-0 caller such as MCMAN's fast read/write) is not part of the state.
+        [[nodiscard]] bool hasEeRpcInFlight() const noexcept { return m_eeRpcInFlight.load() != 0u; }
 
         template <typename Ar>
         void serialize(Ar &ar)
         {
             ps2x::state::fields(ar, m_servers, m_nextDmaId, m_dmaCallback);
+            if constexpr (Ar::kLoading)
+                m_eeRpcInFlight = 0u; // never saved with one in flight (save blocker)
         }
 
     private:
@@ -156,5 +162,6 @@ namespace ps2x::iop::detail
         std::mutex m_eeRpcMutex;
         std::vector<EeRpcCompletion> m_eeRpcDone;
         uint32_t m_eeRpcCalls = 0u;
+        std::atomic<uint32_t> m_eeRpcInFlight{0u};
     };
 }

@@ -30,7 +30,7 @@ BUILD = ROOT / "build" / "port"
 BIN = BUILD / "bin"
 EXE = BIN / "godhand.exe"
 VSENV = ROOT / "tools" / "win" / "vsenv.cmd"
-JOBS = os.environ.get("GODHAND_JOBS", "8")
+JOBS = os.environ.get("GODHAND_JOBS", str(os.cpu_count() or 8))
 GENERATED = ROOT / "generated"
 TOML = Path(os.environ.get("GODHAND_TOML", ROOT / "recomp" / "godhand.toml"))
 
@@ -53,8 +53,8 @@ EXIT_CODES = {
 
 
 # Builds, the recompiler and test boots run at below-normal priority so the PC stays responsive (child processes such
-# as ninja/cl inherit it). GODHAND_NORMAL_PRIORITY=1 turns that off.
-LOW_PRIORITY = 0 if os.environ.get("GODHAND_NORMAL_PRIORITY") == "1" else getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0)
+# as ninja/cl inherit it) only when GODHAND_LOW_PRIORITY=1 (2026-10-18: normal priority and all cores by default).
+LOW_PRIORITY = getattr(subprocess, "BELOW_NORMAL_PRIORITY_CLASS", 0) if os.environ.get("GODHAND_LOW_PRIORITY") == "1" else 0
 
 
 def run(cmd, **kwargs):
@@ -571,9 +571,8 @@ def configure(extra=()):
             src = Path(deps) / f"{name}-src"
             if src.is_dir():
                 args.append(f"-DFETCHCONTENT_SOURCE_DIR_{name.upper()}={src.as_posix()}")
-    # With a local _deps folder, never download at configure time unless asked (a missing dependency fails instead).
-    # Without one (a fresh checkout), CMake downloads raylib, imgui and friends as usual.
-    if deps and os.environ.get("GODHAND_ALLOW_DOWNLOADS") != "1":
+    # Never download at configure time unless asked: a missing dependency fails instead.
+    if os.environ.get("GODHAND_ALLOW_DOWNLOADS") != "1":
         args.append("-DFETCHCONTENT_FULLY_DISCONNECTED=ON")
     # The recompiler is not part of the game build; only an explicit -DGODHAND_BUILD_RECOMP=ON turns it on, and every
     # other configure resets it (a stale ON would pull elfio, toml11, fmt, libdwarf and rabbitizer).
@@ -633,8 +632,26 @@ def play(args=()):
     if not EXE.exists():
         print("godhand.exe not built yet: run 'python -I build.py build' first.")
         return 1
+    # Session header (sweep L2): play_last.log had elapsed seconds only, no wall-clock time or exe identity.
+    digest = hashlib.sha256(EXE.read_bytes()).hexdigest()
+    print(f"[session] start {time.strftime('%Y-%m-%d %H:%M:%S %z')} exe {EXE.name} sha256 {digest}", flush=True)
     # --time-limit 0: a normal run is not capped (the ini default TimeLimitSeconds is for hidden boots).
-    return run([EXE, "--window", "--time-limit", "0", *args], cwd=BIN)
+    code = run([EXE, "--window", "--time-limit", "0", *args], cwd=BIN)
+    print(f"[session] end {time.strftime('%Y-%m-%d %H:%M:%S %z')} exit {code}", flush=True)
+    return code
+
+
+def keep_play_log(args=()):
+    """Start-God-Hand.cmd, before it overwrites logs/play_last.log: keep the previous session as
+    logs/play_<its time>.log (nothing is deleted; each is ~1 MB). Sweep 2026-10-17 L2: two sessions' logs were lost."""
+    logs = BIN / "logs"
+    last = logs / "play_last.log"
+    if last.is_file() and last.stat().st_size > 0:
+        stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime(last.stat().st_mtime))
+        target = logs / f"play_{stamp}.log"
+        if not target.exists():
+            shutil.copy2(last, target)
+    return 0
 
 
 def summarize(log_path, code, stamp):
@@ -689,6 +706,26 @@ def boot(args=()):
     env.setdefault("GODHAND_DLL_LOG", str(logs / f"dll_loads_{stamp}.csv"))
     # Hidden runs never read or write the player's controls.ini: a fresh default-layout file per run.
     env.setdefault("GODHAND_CONTROLS_FILE", str(logs / f"controls_{stamp}.ini"))
+    # ... nor the player's memory card (sweep 2026-10-17 L3/CR-2): 30 earlier hidden boots opened bin/memcards/Mcd001.ps2
+    # read/write and a time-limit stop can land mid-save. Default: a per-run copy (the run still sees the player's saves).
+    def resolved(value):
+        path = Path(value)
+        return (path if path.is_absolute() else BIN / path).resolve()
+    if resolved(env["GODHAND_CONTROLS_FILE"]) == (BIN / "controls.ini").resolve():
+        print("refusing: GODHAND_CONTROLS_FILE is the player's controls.ini; hidden runs use a scratch file.")
+        return 1
+    if env.get("GODHAND_MC_DIR"):
+        if resolved(env["GODHAND_MC_DIR"]) == (BIN / "memcards").resolve():
+            print("refusing: GODHAND_MC_DIR is the player's memory card folder; hidden runs use a copy.")
+            return 1
+    else:
+        mc_copy = logs / f"mc_{stamp}"
+        mc_copy.mkdir(parents=True, exist_ok=True)
+        for name in ("Mcd001.ps2", "Mcd002.ps2"):
+            if (BIN / "memcards" / name).is_file():
+                shutil.copy2(BIN / "memcards" / name, mc_copy / name)
+        env["GODHAND_MC_DIR"] = str(mc_copy)
+    print(f"memory cards: {env['GODHAND_MC_DIR']}")
     # Read by the runtime before main() (a static initializer), so it must come from the real environment.
     env.setdefault("PS2X_BRANCH_TRACE", "256")
     env.setdefault("PS2X_BRANCH_TRACE_FILE", str(logs / f"branch_trace_{stamp}.txt"))
@@ -736,6 +773,7 @@ COMMANDS = {
     "boot": boot,
     "run": play,
     "play": play,
+    "keep-play-log": keep_play_log,
     "status": status,
 }
 

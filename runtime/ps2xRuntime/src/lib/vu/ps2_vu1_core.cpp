@@ -81,6 +81,40 @@ namespace
         bool enabled = true;
     };
 
+    // Log only (sweep R1): a VU1 micro memory image with no compiled (AOT) code runs every call in the interpreter, far
+    // slower, with nothing in the log. Once per image: one line, and the image as vu1_<hash>.bin (the capture format
+    // vu1_recomp reads) in PS2X_VU1_MISS_DIR (default logs/vu1_missing next to the exe's working folder; "0" = no file).
+    void reportUncompiledVu1Image(uint64_t hash, const uint8_t *vuCode, uint32_t codeSize)
+    {
+        static std::unordered_map<uint64_t, bool> reported;
+        if (reported.size() >= 256u || !reported.emplace(hash, true).second)
+            return;
+        static const std::string directory = []
+        {
+            const char *value = std::getenv("PS2X_VU1_MISS_DIR");
+            return std::string(value && *value ? value : "logs/vu1_missing");
+        }();
+        std::string saved = "not saved";
+        if (directory != "0")
+        {
+            std::error_code error;
+            std::filesystem::create_directories(directory, error);
+            char name[64];
+            std::snprintf(name, sizeof(name), "vu1_%016llx.bin", static_cast<unsigned long long>(hash));
+            const std::filesystem::path path = std::filesystem::path(directory) / name;
+            if (std::filesystem::exists(path, error))
+                saved = path.string() + " (already there)";
+            else if (FILE *file = std::fopen(path.string().c_str(), "wb"))
+            {
+                const bool ok = std::fwrite(vuCode, 1, codeSize, file) == codeSize;
+                saved = ok ? path.string() : "write failed";
+                std::fclose(file);
+            }
+        }
+        std::fprintf(stderr, "[vu1-aot] image %016llx has no compiled code: VU1 runs it in the interpreter (slower); %s\n",
+                     static_cast<unsigned long long>(hash), saved.c_str());
+    }
+
     VU1InterpreterAccess::CompiledProgram findCompiledVu1Image(Vu1CompiledRegistry &registry, const uint8_t *vuCode, uint32_t codeSize)
     {
         for (size_t index = 0; index < registry.recent.size(); ++index)
@@ -93,10 +127,13 @@ namespace
                 return registry.recent[0].program;
             }
         }
-        const auto it = registry.programs.find(fnv1a64(vuCode, codeSize));
+        const uint64_t hash = fnv1a64(vuCode, codeSize);
+        const auto it = registry.programs.find(hash);
         Vu1ImageCacheEntry entry;
         entry.image.assign(vuCode, vuCode + codeSize);
         entry.program = it == registry.programs.end() ? nullptr : it->second;
+        if (!entry.program)
+            reportUncompiledVu1Image(hash, vuCode, codeSize);
         constexpr size_t kRecentImages = 8u;
         if (registry.recent.size() < kRecentImages)
             registry.recent.push_back(std::move(entry));
