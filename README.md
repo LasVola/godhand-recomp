@@ -3,8 +3,8 @@
 **God Hand (PS2, 2006) running natively on PC. Not an emulator: the game's own code, rebuilt as a Windows program.**
 
 > [!WARNING]
-> **Work in progress.** Tested from the start of the game through stage 2 and into stage 3.
-> Later stages, the final bosses and the ending have not been played yet. Expect bugs, and please report them
+> **Work in progress.** Tested from the start of the game into stage 3, past the Gorilla Mask boss fight.
+> The rest of stage 3, later stages, the final bosses and the ending have not been played yet. Expect bugs, and please report them
 > (see [Reporting bugs](#reporting-bugs)).
 
 ![God Hand running natively, the title screen](assets/title-screen.png)
@@ -22,7 +22,7 @@ How far the game has been played on this port so far:
 | Opening, title menu, Clover logo movie | ✅ Played |
 | Stage 1 (all areas and the boss) | ✅ Played |
 | Stage 2 (all areas, the sepia flashback, the boss) | ✅ Played |
-| Stage 3 (the amusement park) | 🟡 First area played |
+| Stage 3 (the amusement park) | 🟡 Through area 5, Gorilla Mask beaten |
 | Stages 4 to 8 and their bosses | ⬜ Not played yet |
 | Ending and credits | ⬜ Not played yet |
 | Coliseum and the other extras | ⬜ Not played yet |
@@ -42,7 +42,7 @@ How far the game has been played on this port so far:
 ## What works
 
 - **The game itself:** fighting, bosses, dying and continuing, story cutscenes and movies, the casino, the God Reel,
-  saving and loading. Tested through stage 2 and the start of stage 3.
+  saving and loading. Tested through stage 2 and stage 3 up to area 5 (past Gorilla Mask).
 - **60 FPS at 3x resolution** (1536x1344, shown in the original 4:3) on a modern graphics card.
 - **Windowed or full screen** (F11).
 - **Keyboard, mouse and controllers**, all rebindable in game with **F1**.
@@ -55,7 +55,7 @@ How far the game has been played on this port so far:
   sit on a black screen for a couple of minutes. After that it starts in seconds.
 - **Short pauses the first time an effect appears**, while its graphics are prepared. They do not come back once seen.
 - **Freezes:** the ones found so far (disc reads, cutscene effects) are fixed. If you still see one, please report it.
-- **Not played yet:** stage 3 onwards, the ending and its movies. They may crash or misbehave.
+- **Not played yet:** the rest of stage 3 and everything after it, the ending and its movies. They may crash or misbehave.
 
 ---
 
