@@ -3,7 +3,8 @@
 **God Hand (PS2, 2006) running natively on PC. Not an emulator: the game's own code, rebuilt as a Windows program.**
 
 > [!WARNING]
-> **Work in progress.** Tested from the start of the game into stage 3, past the Gorilla Mask boss fight.
+> **Work in progress.** Tested from the start of the game into stage 3, past the Gorilla Mask boss fight, played
+> side by side with the original game on a real PlayStation 2 (the tester's own console and disc).
 > The rest of stage 3, later stages, the final bosses and the ending have not been played yet. Expect bugs, and please report them
 > (see [Reporting bugs](#reporting-bugs)).
 
@@ -15,7 +16,7 @@ You need your own copy of the game (God Hand, USA version). **No game files are 
 
 ## Progress (last updated October 19, 2026)
 
-How far the game has been played on this port so far:
+How far the game has been played on this port so far (each part compared side by side with a real PS2):
 
 | Part of the game | Status |
 |------------------|--------|
