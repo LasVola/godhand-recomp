@@ -272,6 +272,8 @@ struct GSGpuBackend::Impl
     Program presentHash;
     Program presentBlit;
     Program pageCopy;
+    Program orderedShuffle;
+    std::string shaderPrefix;
     Program hwRaster;
     GLuint hwFramebuffer = 0;
     GLuint hwVertexArray = 0;
@@ -714,7 +716,7 @@ struct GSGpuBackend::Impl
                     gl.DeleteQueries(1, &query);
             const GLuint buffers[] = {vramBuffer, swizzleBuffer, clutBuffer, primBuffer, stateBuffer, tileBuffer, tileListBuffer, dataBuffer, clutOpBuffer, pageMapBuffer, hiresBuffer, scaleBuffer};
             gl.DeleteBuffers(static_cast<GLsizei>(std::size(buffers)), buffers);
-            for (Program *program : {&raster, &clutLoad, &upload, &copyRead, &copyWrite, &clear, &poke, &present, &presentHash, &presentBlit, &pageCopy, &hwRaster})
+            for (Program *program : {&raster, &clutLoad, &upload, &copyRead, &copyWrite, &clear, &poke, &present, &presentHash, &presentBlit, &pageCopy, &orderedShuffle, &hwRaster})
                 if (program->id)
                     gl.DeleteProgram(program->id);
             if (hwFramebuffer)
@@ -1529,6 +1531,7 @@ struct GSGpuBackend::Impl
             scaleBuffer = makeBuffer(sizeof(scaleWords), scaleWords, 12u);
             hiresBuffer = makeBuffer(static_cast<size_t>(kPages + kShadowPages) / 8u, nullptr, 11u);
         }
+        shaderPrefix = prefix;
         vramBuffer = makeBuffer(planeBytes * scale * scale, nullptr, 0u);
         swizzleBuffer = makeBuffer(swizzle.size() * sizeof(uint16_t), swizzle.data(), 1u);
         std::vector<uint32_t> zeros(kClutSlots * 256u, 0u);
@@ -2044,7 +2047,7 @@ struct GSGpuBackend::Impl
         return stateCount++;
     }
 
-    bool prepareTarget(const GSDrawState &state, int x0, int y0, int x1, int y1)
+    bool prepareTarget(const GSDrawState &state, int x0, int y0, int x1, int y1, bool nativeFilter = false)
     {
         const GSContext &ctx = state.context;
         const uint64_t key = static_cast<uint64_t>(ctx.frame.fbp) | (static_cast<uint64_t>(ctx.frame.fbw) << 9u) |
@@ -2114,11 +2117,19 @@ struct GSGpuBackend::Impl
             ++stats.flushTexture;
             flushFor(1u);
         }
+        // Integer-UV 1:1 bilinear passes are native half-texel filters, not high-resolution copies. Their two
+        // taps must stay one GS texel apart. Keep their input and ping-pong output on the native texture grid.
+        if (nativeFilter && scale > 1u)
+        {
+            if ((hiresPages & (read | write)).any())
+                flushFor(1u);
+            hiresPages &= ~(read | write);
+        }
         if (clutKeyValid && (write & clutSourcePages).any())
             clutKeyValid = false;
         writePages |= write;
         readPages |= read;
-        if (scale > 1u)
+        if (scale > 1u && !nativeFilter)
             hiresPages |= write;
         targetKey = key;
         hasTarget = true;
@@ -2213,6 +2224,84 @@ struct GSGpuBackend::Impl
         bin(primCount - 1u, x, y, x, y);
     }
 
+    bool drawOrderedShuffle(const GSPrimitiveBatch &batch, const GSSpriteAxis &ax, const GSSpriteAxis &ay,
+                            int x0, int y0, int x1, int y1)
+    {
+        const auto &s = batch.state;
+        const auto &c = s.context;
+        const auto &a = batch.vertices[0];
+        const auto &b = batch.vertices[1];
+        const int du = static_cast<int>(a.u / 16u) - static_cast<int>(ax.origin);
+        const int dv = static_cast<int>(a.v / 16u) - static_cast<int>(ay.origin);
+        const uint32_t ztest = (c.test & 0x10000u) != 0u ? (c.test >> 17u) & 3u : 1u;
+        // A horizontal, unfiltered in-place CT16 shuffle needs the reference's scanline/page-cache order.
+        // A whole-draw snapshot is insufficient: a source page entered later must see earlier writes.
+        if (!s.prim.tme || !s.prim.fst || s.linearFilter || s.prim.abe || s.prim.fge || c.fba != 0u ||
+            c.frame.psm != GS_PSM_CT16 || c.frame.fbmsk != 0x3FFFu || c.tex0.psm != GS_PSM_CT16 ||
+            c.tex0.tbp0 != (c.frame.fbp << 5u) ||
+            c.tex0.tbw != c.frame.fbw || c.tex0.tfx != 1u || !c.tex0.tcc || s.texa.ta0 != 0u || s.texa.ta1 != 128u ||
+            !c.zbuf.zmask || ztest != 1u || (c.test & 0x4001u) != 0u || dv != 0 || du != -8 ||
+            y1 - y0 < 64 || x0 / 64 != x1 / 64 ||
+            ax.origin != std::floor(ax.origin) || ay.origin != std::floor(ay.origin) ||
+            x0 + du < 0 || x1 + du >= static_cast<int>(s.textureWidth) || y0 < 0 || y1 >= static_cast<int>(s.textureHeight) ||
+            !gsSpriteAxisZeroWeight(std::lround(ax.origin * 16.0f), std::lround((b.x - c.xyoffset.ofx / 16.0f) * 16.0f),
+                                    a.u, b.u, x0, x1) ||
+            !gsSpriteAxisZeroWeight(std::lround(ay.origin * 16.0f), std::lround((b.y - c.xyoffset.ofy / 16.0f) * 16.0f),
+                                    a.v, b.v, y0, y1))
+            return false;
+        // Only admit unclipped REGION_CLAMP coordinates; the kernel can then use raw swizzled reads.
+        const uint64_t clamp = c.clamp;
+        if ((clamp & 15u) != 10u || x0 + du < static_cast<int>((clamp >> 4u) & 1023u) ||
+            x1 + du > static_cast<int>((clamp >> 14u) & 1023u) || y0 < static_cast<int>((clamp >> 24u) & 1023u) ||
+            y1 > static_cast<int>((clamp >> 34u) & 1023u))
+            return false;
+        // Separate compute program: adding it does not change/recompile any existing raster shader variant.
+        static const char *body = R"GLSL(
+layout(local_size_x = 32) in;
+uniform uvec4 uRect;
+uniform uvec4 uCopy;
+void main()
+{
+    uint y = uRect.y + gl_GlobalInvocationID.x;
+    if (y > uRect.w) return;
+#if HIRES
+    setPlane(gl_WorkGroupID.y);
+#endif
+    uint cached[64];
+    uint page = 0xffffffffu;
+    for (uint x = uRect.x; x <= uRect.z; ++x)
+    {
+        uint sx = uint(int(x) + int(uCopy.w));
+        uint nextPage = sx >> 6u;
+        if (page != nextPage)
+        {
+            page = nextPage;
+            for (uint i = 0u; i < 64u; ++i)
+                cached[i] = readPixel(2u, uCopy.x, uCopy.y, page * 64u + i, y);
+        }
+        uint old = readPixel(2u, uCopy.x, uCopy.y, x, y);
+        uint value = (cached[sx & 63u] & ~uCopy.z) | (old & uCopy.z);
+        writePixelRaw(2u, uCopy.x, uCopy.y, x, y, value);
+    }
+}
+)GLSL";
+        if (!orderedShuffle.id && !compile(orderedShuffle, shaderPrefix, body, {"uRect", "uCopy"}))
+            return false;
+        prepareTarget(s, x0, y0, x1, y1);
+        flushBatch();
+        const uint32_t m = c.frame.fbmsk;
+        const uint32_t packedMask = ((m >> 3u) & 31u) | ((m >> 6u) & 0x3E0u) |
+                                    ((m >> 9u) & 0x7C00u) | ((m >> 16u) & 0x8000u);
+        gl().UseProgram(orderedShuffle.id);
+        gl().Uniform4ui(orderedShuffle.loc[0], x0, y0, x1, y1);
+        gl().Uniform4ui(orderedShuffle.loc[1], c.tex0.tbp0, c.tex0.tbw, packedMask, static_cast<uint32_t>(du));
+        gl().DispatchCompute((y1 - y0 + 32u) / 32u, scale * scale, 1u);
+        barrier();
+        ++stats.batches;
+        ++stats.prims;
+        return true;
+    }
+
     void addSprite(const GSPrimitiveBatch &batch)
     {
         const GSDrawState &state = batch.state;
@@ -2233,6 +2322,9 @@ struct GSGpuBackend::Impl
         const int drawY0 = clampInt(unclippedY0, ctx.scissor.y0, ctx.scissor.y1);
         const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
         const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
+
+        if (drawOrderedShuffle(batch, axisX, axisY, drawX0, drawY0, drawX1, drawY1))
+            return;
 
         // A bilinear FST sprite whose GS filter weights are 0 on every drawn pixel (1:1 copies with the usual +0.5 texel
         // and 1/16 over-span: God Hand's sepia and depth-of-field byte shuffles) gives the top-left texel alone on the
@@ -2274,7 +2366,12 @@ struct GSGpuBackend::Impl
                         (static_cast<uint64_t>(hi) << 34u);
             }
         }
-        prepareTarget(state, drawX0, drawY0, drawX1, drawY1);
+        const bool nativeFilter = state.prim.tme && state.prim.fst && state.linearFilter && !zeroWeight &&
+                                  ctx.frame.psm == GS_PSM_CT32 && ctx.tex0.psm == GS_PSM_CT32 &&
+                                  ((v0.u | v0.v | v1.u | v1.v) & 15u) == 0u &&
+                                  static_cast<int64_t>(v1.u) - v0.u == px1 - px0 &&
+                                  static_cast<int64_t>(v1.v) - v0.v == py1 - py0;
+        prepareTarget(state, drawX0, drawY0, drawX1, drawY1, nativeFilter);
         const uint32_t s = addState(state, zeroWeight, clamp);
         uint32_t *p = newPrim(PrimSprite, s);
         p[1] = static_cast<uint32_t>(drawX0) | (static_cast<uint32_t>(drawX1) << 16u);
@@ -3469,3 +3566,4 @@ bool GSGpuBackend::ImportState(const GSBackendState &state)
     d.localToHostReadPos = static_cast<size_t>(state.localToHostReadPos);
     return true;
 }
+

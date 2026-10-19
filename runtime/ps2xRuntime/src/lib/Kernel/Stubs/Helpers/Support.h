@@ -1,6 +1,13 @@
 #include "runtime/ps2_cd_image.h"
 #include <algorithm>
 #include <cctype>
+#include <chrono>
+#include <cstdio>
+#include <filesystem>
+#include <fstream>
+#include <map>
+#include <memory>
+#include <mutex>
 
 namespace
 {
@@ -425,21 +432,45 @@ namespace
         }
 
         std::memset(dst, 0, byteCount);
-        std::ifstream file(path, std::ios::binary);
-        if (!file.is_open())
+        // God Hand 2026-10-18: this opened the 1.5 GB disc image anew for every sceCdRead. In stage 3 one read held the
+        // EE game thread for 1.2 s inside NtReadFile (stall dump: readHostRange <- readCdSectors <- sceCdRead), a visible
+        // freeze. The file now stays open (one stream per path, reused under a lock), and any read slower than 30 ms is
+        // logged with its size so a remaining stall can be told from a slow disk.
+        static std::mutex streamsMutex;
+        static std::map<std::filesystem::path, std::unique_ptr<std::ifstream>> streams;
+        std::lock_guard<std::mutex> lock(streamsMutex);
+        std::unique_ptr<std::ifstream> &stream = streams[path];
+        if (!stream || !stream->is_open())
         {
-            g_lastCdError = -1;
-            return false;
+            stream = std::make_unique<std::ifstream>(path, std::ios::binary);
+            if (!stream->is_open())
+            {
+                stream.reset();
+                g_lastCdError = -1;
+                return false;
+            }
         }
-
+        std::ifstream &file = *stream;
+        file.clear();
+        const auto started = std::chrono::steady_clock::now();
         file.seekg(static_cast<std::streamoff>(offsetBytes), std::ios::beg);
         if (!file.good())
         {
+            file.clear();
             g_lastCdError = -1;
             return false;
         }
 
         file.read(reinterpret_cast<char *>(dst), static_cast<std::streamsize>(byteCount));
+        file.clear(); // a short read at the end of the file must not poison the next one
+        const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+        static uint32_t slowLogsLeft = 32u;
+        if (ms >= 30.0 && slowLogsLeft != 0u)
+        {
+            --slowLogsLeft;
+            std::fprintf(stderr, "[cd-read] slow host read: %.0f ms for %zu bytes at offset 0x%llx of %s\n", ms, byteCount,
+                         static_cast<unsigned long long>(offsetBytes), path.filename().string().c_str());
+        }
         g_lastCdError = 0;
         return true;
     }

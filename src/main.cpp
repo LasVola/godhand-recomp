@@ -609,6 +609,29 @@ int main(int argc, char *argv[])
         paths.mcRoot = fs::path(mcDir) / "mc0";
     setDefaultEnv("PS2X_GS_SHADER_CACHE_DIR", (cacheDir / "gs_shaders").string());
     paths.cdImage = fs::absolute(iso);
+    // Disc image prefetch (2026-10-18): the game's disc reads are synchronous here (sceCdRead on the EE thread), so a
+    // read that misses the OS file cache stalls the game; one took 1.2 s in stage 3. Reading the whole image once in
+    // the background, at the lowest thread priority, puts it in the OS cache. GODHAND_ISO_PREFETCH=0 turns it off.
+    if (!headless && envFlag("GODHAND_ISO_PREFETCH", true))
+    {
+        std::thread([image = paths.cdImage]
+        {
+#if defined(_WIN32)
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+#endif
+            const auto started = std::chrono::steady_clock::now();
+            std::ifstream file(image, std::ios::binary);
+            std::vector<char> chunk(8u << 20u);
+            uint64_t total = 0;
+            while (file)
+            {
+                file.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
+                total += static_cast<uint64_t>(file.gcount());
+            }
+            const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+            GH_INFO(Boot, "disc image prefetched into the OS file cache: " << (total >> 20) << " MB in " << ms << " ms");
+        }).detach();
+    }
     std::error_code error;
     fs::create_directories(paths.mcRoot, error);
     // GODHAND_QUICK_STATE=<file>: the F5/F9 save-state slot (default states/quick.state).
