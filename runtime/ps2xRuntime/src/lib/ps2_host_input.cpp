@@ -10,8 +10,10 @@
 #include <cctype>
 #include <chrono>
 #include <cmath>
+#include <csignal>
 #include <cstdio>
 #include <cstdlib>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
@@ -37,6 +39,13 @@
 // because its macros clash with raylib's names.)
 #if defined(_WIN32)
 extern "C" __declspec(dllimport) short __stdcall GetAsyncKeyState(int vKey);
+// Sweep CR-9 (accessibility shortcut keys, see "Windows accessibility shortcut keys" below), same reason for no windows.h.
+struct _EXCEPTION_POINTERS;
+using Ps2xTopLevelExceptionFilter = long(__stdcall *)(_EXCEPTION_POINTERS *);
+extern "C" __declspec(dllimport) int __stdcall SystemParametersInfoW(unsigned int action, unsigned int param, void *data, unsigned int winIni);
+extern "C" __declspec(dllimport) void *__stdcall GetForegroundWindow();
+extern "C" __declspec(dllimport) Ps2xTopLevelExceptionFilter __stdcall SetUnhandledExceptionFilter(Ps2xTopLevelExceptionFilter filter);
+extern "C" __declspec(dllimport) int __stdcall SetConsoleCtrlHandler(int(__stdcall *handler)(unsigned long ctrlType), int add);
 #endif
 
 namespace ps2_host_input
@@ -470,6 +479,183 @@ namespace ps2_host_input
         std::string g_lastFileError;
         std::atomic<bool> g_overlayOpen{false};
 
+        // ---- button prompts (prompts:: in the header) ------------------------------------------------------------------
+        // Player 1's labels for the game's PS2 button art (God Hand: the text icon sheet, texture 0x18 of core_usa.bin
+        // drawn by func_002B1300, and the action prompt sheet, texture 0x0F; src/godhand/button_prompts.cpp redraws
+        // them in guest RAM). Written on the window thread (rebuildConfigs, readPort); read from any thread, the EE
+        // thread's vblank hook included: atomics, plus g_promptMutex held only for the ~1 KB copy.
+        std::mutex g_promptMutex;
+        prompts::Snapshot g_prompts; // g_promptMutex
+        std::atomic<uint32_t> g_promptGeneration{0u};
+        std::atomic<prompts::Device> g_promptDevice{prompts::Device::Keys};
+        std::atomic<prompts::PadStyle> g_promptStyle{prompts::PadStyle::Unknown};
+        // Last-device detector (window thread). Bit = binding key index (the 16 buttons, then the 8 stick halves).
+        uint32_t g_promptKeysHeld = 0u; // held past half by a key or mouse button binding
+        uint32_t g_promptPadsHeld = 0u; // held past half by a controller binding
+        int g_promptPad = -1;           // the controller that last pressed a bound input (-1: none yet)
+        int g_promptBoundPad = 0;       // player 1's first controller binding's controller (the style before any press)
+        std::chrono::steady_clock::time_point g_promptSwitchAt{};
+        constexpr auto kPromptSwitchDelay = std::chrono::milliseconds(500); // Tokyo Jungle's PAD_PROMPT_SWITCH_MS
+        static_assert(prompts::kKeyAnyShift == kAnyShift && prompts::kKeyAnyControl == kAnyControl && prompts::kKeyAnyAlt == kAnyAlt);
+        static_assert(kBindingKeyCount <= 32u, "the held masks have one bit per binding key");
+
+        struct PromptName
+        {
+            int code;
+            std::string_view label;
+            std::string_view compact; // empty: same as the label
+        };
+
+        // Short key names after Tokyo Jungle's pad_prompt_key_names (pad_prompt_art.c), keyed by raylib code: every key
+        // keyCode() can return besides letters, digits, F-keys and keypad digits.
+        constexpr PromptName kPromptKeyNames[] = {
+            {KEY_ESCAPE, "Esc", ""}, {KEY_TAB, "Tab", ""}, {KEY_BACKSPACE, "Bksp", ""}, {KEY_ENTER, "Enter", "Ent"},
+            {KEY_KP_ENTER, "NumEnt", "NEnt"}, {KEY_INSERT, "Ins", ""}, {KEY_DELETE, "Del", ""}, {KEY_PAUSE, "Pause", "Paus"},
+            {KEY_HOME, "Home", "Hm"}, {KEY_END, "End", ""}, {KEY_LEFT, "\xE2\x86\x90", ""}, {KEY_UP, "\xE2\x86\x91", ""},
+            {KEY_RIGHT, "\xE2\x86\x92", ""}, {KEY_DOWN, "\xE2\x86\x93", ""}, {KEY_PAGE_UP, "PgUp", "PU"},
+            {KEY_PAGE_DOWN, "PgDn", "PD"}, {kAnyShift, "Shift", "Shft"}, {kAnyControl, "Ctrl", ""}, {kAnyAlt, "Alt", ""},
+            {KEY_CAPS_LOCK, "Caps", ""}, {KEY_SPACE, "Space", "Spc"}, {KEY_COMMA, ",", ""}, {KEY_MINUS, "-", ""},
+            {KEY_PERIOD, ".", ""}, {KEY_SLASH, "/", ""}, {KEY_SEMICOLON, ";", ""}, {KEY_EQUAL, "=", ""},
+            {KEY_LEFT_BRACKET, "[", ""}, {KEY_BACKSLASH, "\\", ""}, {KEY_RIGHT_BRACKET, "]", ""}, {KEY_APOSTROPHE, "'", ""},
+            {KEY_GRAVE, "`", ""}, {KEY_LEFT_SHIFT, "Shift", "Shft"}, {KEY_RIGHT_SHIFT, "RShift", "RShf"},
+            {KEY_LEFT_CONTROL, "Ctrl", ""}, {KEY_RIGHT_CONTROL, "RCtrl", "RCtl"}, {KEY_LEFT_ALT, "Alt", ""},
+            {KEY_RIGHT_ALT, "RAlt", ""}, {KEY_NUM_LOCK, "NumLk", "NmLk"}, {KEY_SCROLL_LOCK, "ScrLk", "ScLk"},
+            {KEY_PRINT_SCREEN, "PrtSc", "Prt"}, {KEY_KB_MENU, "Menu", ""},
+        };
+
+        // Xbox-style names in ps2_host_gamepads::Button order (the layout GLFW and SDL report every controller with).
+        // Paddles as on an Elite pad: SDL's right paddle 1/2 are P1/P2, left 1/2 are P3/P4.
+        constexpr std::array<std::string_view, ps2_host_gamepads::ButtonCount> kPromptPadButtons{
+            "A", "B", "X", "Y", "View", "Guide", "Menu", "LS", "RS", "LB", "RB", "D\xE2\x86\x91", "D\xE2\x86\x93",
+            "D\xE2\x86\x90", "D\xE2\x86\x92", "Misc", "P1", "P3", "P2", "P4", "Touch"};
+        // Per ps2_host_gamepads::Axis: the negative half, then the positive half.
+        constexpr std::array<std::string_view, ps2_host_gamepads::AxisCount * 2> kPromptPadAxes{
+            "LS\xE2\x86\x90", "LS\xE2\x86\x92", "LS\xE2\x86\x91", "LS\xE2\x86\x93", "RS\xE2\x86\x90", "RS\xE2\x86\x92",
+            "RS\xE2\x86\x91", "RS\xE2\x86\x93", "LT-", "LT", "RT-", "RT"};
+
+        void copyLabel(char (&out)[prompts::kLabelBytes], std::string_view text)
+        {
+            size_t size = std::min(text.size(), prompts::kLabelBytes - 1u);
+            while (size > 0u && size < text.size() && (static_cast<unsigned char>(text[size]) & 0xC0u) == 0x80u)
+                --size; // never cut a UTF-8 character in two
+            std::fill(std::begin(out), std::end(out), '\0');
+            std::copy_n(text.data(), size, out);
+        }
+
+        prompts::Binding promptBinding(const Element &element)
+        {
+            prompts::Binding binding;
+            binding.code = static_cast<int16_t>(element.code);
+            char full[prompts::kLabelBytes]{};
+            char small[prompts::kLabelBytes]{};
+            std::string_view label = "?";
+            std::string_view compact;
+            switch (element.source)
+            {
+            case Source::Keyboard:
+                binding.type = prompts::Type::Key;
+                if (element.code >= KEY_A && element.code <= KEY_Z)
+                    std::snprintf(full, sizeof(full), "%c", 'A' + (element.code - KEY_A));
+                else if (element.code >= KEY_ZERO && element.code <= KEY_NINE)
+                    std::snprintf(full, sizeof(full), "%c", '0' + (element.code - KEY_ZERO));
+                else if (element.code >= KEY_F1 && element.code <= KEY_F12)
+                    std::snprintf(full, sizeof(full), "F%d", element.code - KEY_F1 + 1);
+                else if (element.code >= KEY_KP_0 && element.code <= KEY_KP_9)
+                {
+                    std::snprintf(full, sizeof(full), "Num%d", element.code - KEY_KP_0);
+                    std::snprintf(small, sizeof(small), "N%d", element.code - KEY_KP_0);
+                    compact = small;
+                }
+                else
+                    for (const PromptName &name : kPromptKeyNames)
+                        if (name.code == element.code)
+                        {
+                            label = name.label;
+                            compact = name.compact;
+                            break;
+                        }
+                if (full[0] != '\0')
+                    label = full;
+                break;
+            case Source::Pointer:
+                binding.type = prompts::Type::Mouse;
+                label = element.code == MOUSE_BUTTON_LEFT ? "M1" : element.code == MOUSE_BUTTON_RIGHT ? "M2" : "M3";
+                break;
+            case Source::PadButton:
+                binding.type = prompts::Type::PadButton;
+                binding.device = static_cast<int8_t>(element.device);
+                label = kPromptPadButtons[static_cast<size_t>(element.code)];
+                if (element.code == ps2_host_gamepads::Guide)
+                    compact = "Gde"; // the two names over the compact limit of 4 characters
+                else if (element.code == ps2_host_gamepads::Touchpad)
+                    compact = "TPad";
+                break;
+            case Source::PadAxis:
+                binding.type = prompts::Type::PadAxis;
+                binding.device = static_cast<int8_t>(element.device);
+                binding.sign = element.sign < 0.0f ? int8_t{-1} : int8_t{1};
+                label = kPromptPadAxes[static_cast<size_t>(element.code) * 2u + (element.sign < 0.0f ? 0u : 1u)];
+                break;
+            }
+            copyLabel(binding.label, label);
+            copyLabel(binding.compact, compact.empty() ? label : compact);
+            return binding;
+        }
+
+        bool samePrompts(const prompts::Snapshot &a, const prompts::Snapshot &b)
+        {
+            auto same = [](const prompts::Binding &x, const prompts::Binding &y)
+            {
+                return x.type == y.type && x.device == y.device && x.sign == y.sign && x.code == y.code &&
+                       std::equal(std::begin(x.label), std::end(x.label), std::begin(y.label)) &&
+                       std::equal(std::begin(x.compact), std::end(x.compact), std::begin(y.compact));
+            };
+            return std::equal(a.keys.begin(), a.keys.end(), b.keys.begin(), same) &&
+                   std::equal(a.controller.begin(), a.controller.end(), b.controller.begin(), same);
+        }
+
+        // Player 1's labels from the live table (the end of rebuildConfigs); a new generation only when one changed.
+        void publishPrompts(const PadConfig &config)
+        {
+            // prompts::Input order -> binding key index (kPadButtonKeys, then kStickKeys).
+            static const std::array<size_t, prompts::InputCount> kInputKeys = []
+            {
+                constexpr std::array<std::string_view, prompts::InputCount> kNames{
+                    "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3", "R3", "Start", "Select",
+                    "Up", "Down", "Left", "Right", "LUp", "LDown", "LLeft", "LRight", "RUp", "RDown", "RLeft", "RRight"};
+                std::array<size_t, prompts::InputCount> keys{};
+                for (size_t input = 0; input < kNames.size(); ++input)
+                    keys[input] = bindingKeyIndex(kNames[input]).value();
+                return keys;
+            }();
+            prompts::Snapshot next;
+            int boundPad = -1;
+            for (size_t input = 0; input < kInputKeys.size(); ++input)
+            {
+                const size_t index = kInputKeys[input];
+                const Bindings &list = index < kPadButtonKeys.size() ? config.buttons[index] : config.sticks[index - kPadButtonKeys.size()];
+                for (const Chord &chord : list)
+                {
+                    if (chord.size() != 1u)
+                        continue; // a chord ("a & b") is no prompt; the Controls screen keeps it apart too
+                    const Element &element = chord.front();
+                    const bool keys = element.source == Source::Keyboard || element.source == Source::Pointer;
+                    prompts::Binding &slot = keys ? next.keys[input] : next.controller[input];
+                    if (slot.type == prompts::Type::None)
+                        slot = promptBinding(element);
+                    if (!keys && boundPad < 0)
+                        boundPad = element.device;
+                }
+            }
+            g_promptBoundPad = std::max(boundPad, 0);
+            std::lock_guard<std::mutex> lock(g_promptMutex);
+            if (g_prompts.generation != 0u && samePrompts(next, g_prompts))
+                return;
+            next.generation = g_prompts.generation + 1u == 0u ? 1u : g_prompts.generation + 1u;
+            g_prompts = next;
+            g_promptGeneration.store(next.generation, std::memory_order_release);
+        }
+
         // Precedence per pad: PS2X_PAD<n> in the environment, then the file's [PadN], then the defaults.
         void rebuildConfigs()
         {
@@ -483,6 +669,7 @@ namespace ps2_host_input
                     g_configs[pad] = configFromSection(defaultSection(pad), pad);
             }
             g_configsValid = true;
+            publishPrompts(g_configs[0]); // every rebuild: file load, the 1-s file poll, F1 edits, reset
         }
 
         const std::array<PadConfig, kMaxPlayers> &padConfigs()
@@ -1102,6 +1289,11 @@ namespace ps2_host_input
         // Back+Start opens the Controls screen, so the game must never see that chord. Back or Start pressed alone is held
         // back for kGateDelay; a second button arriving inside it makes a chord, and both stay hidden until both are
         // released. A tap shorter than kGateDelay still reaches the game, as a kGatePulse press after its release.
+        // Sweep CR-5: this gate was never switched on (nothing called setChordGate), so Start pressed a moment before
+        // Back paused the game or skipped a cutscene behind the Controls screen. ps2x::controls::hostTick now turns it
+        // on while the screen can open. With one of the two already held, the other is a chord from its first frame
+        // and never reaches the game. Cost: a lone Back or Start reaches the game kGateDelay late (a tap: when it is
+        // released): about 5 fields, on the pause/menu buttons only; keys and every other button are never delayed.
         constexpr auto kGateDelay = std::chrono::milliseconds(80);
         constexpr auto kGatePulse = std::chrono::milliseconds(50);
         struct ChordGate
@@ -1114,7 +1306,7 @@ namespace ps2_host_input
         std::array<ChordGate, ps2_host_gamepads::kMaxDevices> g_chordGates{};
         std::array<std::array<bool, 2>, ps2_host_gamepads::kMaxDevices> g_gateHide{};
         std::array<std::array<bool, 2>, ps2_host_gamepads::kMaxDevices> g_gateForce{};
-        std::atomic<bool> g_chordGateEnabled{false}; // only while the Controls screen can open (ps2x::controls::hostTick)
+        std::atomic<bool> g_chordGateEnabled{false}; // only while the Controls screen can open (set by ps2x::controls::hostTick)
         // Self-test input: player 1's buttons (PS2 bits) and controller 1's Back (bit 0) / Start (bit 1), window thread.
         std::atomic<uint16_t> g_testButtons{0u};
         std::atomic<uint8_t> g_testGateButtons{0u};
@@ -1149,8 +1341,14 @@ namespace ps2_host_input
                             gate.since[which] = now;
                         hide = now - gate.since[which] < kGateDelay;
                     }
-                    else if (gate.down[which] && now - gate.since[which] < kGateDelay)
-                        gate.pulseUntil[which] = now + kGatePulse; // a quick tap: the game still gets it
+                    else if (gate.down[which])
+                    {
+                        // Released. A quick tap (shorter than kGateDelay): the game still gets it, as a kGatePulse press.
+                        // Review 2026-10-18: a press released just after kGateDelay was shown for a frame or less, which
+                        // the game's pad read can miss (a lost Start); it now stays shown until it was up for kGatePulse.
+                        gate.pulseUntil[which] = now - gate.since[which] < kGateDelay ? now + kGatePulse
+                                                                                      : gate.since[which] + kGateDelay + kGatePulse;
+                    }
                     gate.down[which] = down[which];
                     g_gateHide[static_cast<size_t>(device)][which] = enabled && hide;
                     g_gateForce[static_cast<size_t>(device)][which] = enabled && !down[which] && now < gate.pulseUntil[which];
@@ -1199,7 +1397,16 @@ namespace ps2_host_input
             return 0.0f;
         }
 
-        float bindingsValue(const Bindings &bindings)
+        // Button prompts: which kinds of binding hold an input past half (the device in use).
+        struct Fired
+        {
+            bool keys = false;       // a key or mouse button binding
+            bool controller = false; // a controller button or axis half
+            int pad = -1;            // that controller
+        };
+
+        // fired (optional): the kinds of the bindings held past half.
+        float bindingsValue(const Bindings &bindings, Fired *fired = nullptr)
         {
             float value = 0.0f;
             for (const Chord &chord : bindings)
@@ -1208,6 +1415,19 @@ namespace ps2_host_input
                 for (const Element &element : chord)
                     held = std::min(held, elementValue(element));
                 value = std::max(value, held);
+                if (fired && held > 0.5f)
+                {
+                    for (const Element &element : chord)
+                    {
+                        if (element.source == Source::Keyboard || element.source == Source::Pointer)
+                            fired->keys = true;
+                        else
+                        {
+                            fired->controller = true;
+                            fired->pad = element.device;
+                        }
+                    }
+                }
             }
             return value;
         }
@@ -1376,6 +1596,41 @@ namespace ps2_host_input
             return {(invert & 1u) != 0u ? -x : x, (invert & 2u) != 0u ? -y : y};
         }
 
+        // Button prompts: a bound input newly held past half picks the device the prompts show, keys/mouse or controller
+        // (Tokyo Jungle's cellPad.c rule). At most one change per kPromptSwitchDelay, so using both at once does not
+        // flicker; a key and a controller input newly pressed in the same frame change nothing. Counted only while the
+        // window has focus (GLFW reads controllers in the background too). Self-test, scripted and FIFO input are merged
+        // after readPort, so they never switch it. keysHeld/padsHeld: bit = binding key index.
+        void notePromptInput(uint32_t keysHeld, uint32_t padsHeld, int pad)
+        {
+            const uint32_t keyEdge = keysHeld & ~g_promptKeysHeld;
+            const uint32_t padEdge = padsHeld & ~g_promptPadsHeld;
+            g_promptKeysHeld = keysHeld;
+            g_promptPadsHeld = padsHeld;
+            if ((keyEdge != 0u || padEdge != 0u) && IsWindowFocused())
+            {
+                if (padEdge != 0u && pad >= 0)
+                    g_promptPad = pad;
+                const prompts::Device wanted = keyEdge != 0u ? prompts::Device::Keys : prompts::Device::Controller;
+                const auto now = std::chrono::steady_clock::now();
+                if ((keyEdge == 0u || padEdge == 0u) && wanted != g_promptDevice.load(std::memory_order_relaxed) &&
+                    now - g_promptSwitchAt >= kPromptSwitchDelay)
+                {
+                    g_promptSwitchAt = now;
+                    g_promptDevice.store(wanted, std::memory_order_relaxed);
+                    std::cerr << "[prompts] device: " << (wanted == prompts::Device::Keys ? "keyboard/mouse" : "controller") << std::endl;
+                }
+            }
+            prompts::PadStyle style = prompts::PadStyle::Unknown;
+            switch (ps2_host_gamepads::style(g_promptPad >= 0 ? g_promptPad : g_promptBoundPad))
+            {
+            case ps2_host_gamepads::Style::Xbox: style = prompts::PadStyle::Xbox; break;
+            case ps2_host_gamepads::Style::PlayStation: style = prompts::PadStyle::PlayStation; break;
+            default: break;
+            }
+            g_promptStyle.store(style, std::memory_order_relaxed);
+        }
+
         // Player n (0-based): controls.ini [Pad<n+1>], plus the mouse as the right stick for player 1 (mouse camera).
         // rawStick (optional): the larger stick deflection before the deadzone and the axis scale (0..~1.4).
         PadInputState readPort(uint32_t player, float *rawStick = nullptr)
@@ -1391,10 +1646,26 @@ namespace ps2_host_input
             if (!state.connected)
                 return state;
 
+            // Button prompts (player 1 only): the inputs held past half, by kind of binding.
+            uint32_t keysHeld = 0u;
+            uint32_t padsHeld = 0u;
+            int pad = -1;
+            auto noteFired = [&](size_t bit, const Fired &fired)
+            {
+                if (fired.keys)
+                    keysHeld |= 1u << bit;
+                if (fired.controller)
+                {
+                    padsHeld |= 1u << bit;
+                    pad = fired.pad;
+                }
+            };
             std::array<float, kPadButtonKeys.size()> values{};
             for (size_t i = 0; i < kPadButtonKeys.size(); ++i)
             {
-                values[i] = bindingsValue(config.buttons[i]);
+                Fired fired;
+                values[i] = bindingsValue(config.buttons[i], player == 0u ? &fired : nullptr);
+                noteFired(i, fired);
                 if (values[i] > std::max(config.buttonDeadzone, 0.2f))
                     state.buttons |= kPadButtonKeys[i].second;
             }
@@ -1409,7 +1680,13 @@ namespace ps2_host_input
 
             std::array<float, StickHalfCount> halves{};
             for (size_t i = 0; i < halves.size(); ++i)
-                halves[i] = bindingsValue(config.sticks[i]);
+            {
+                Fired fired;
+                halves[i] = bindingsValue(config.sticks[i], player == 0u ? &fired : nullptr);
+                noteFired(kPadButtonKeys.size() + i, fired);
+            }
+            if (player == 0u)
+                notePromptInput(keysHeld, padsHeld, pad);
             if (rawStick)
                 for (const size_t up : {static_cast<size_t>(LUp), static_cast<size_t>(RUp)})
                     *rawStick = std::max(*rawStick, std::hypot(halves[up + 1u] - halves[up + 3u], halves[up + 2u] - halves[up]));
@@ -1464,6 +1741,154 @@ namespace ps2_host_input
             for (int device = 0; device < ps2_host_gamepads::kMaxDevices; ++device)
                 ps2_host_gamepads::setRumble(device, large[static_cast<size_t>(device)], small[static_cast<size_t>(device)]);
         }
+
+        // ---- Windows accessibility shortcut keys (window thread; the restore from any thread) ---------------------------
+        // Sweep 2026-10-17 CR-9: Taunt is on LeftShift, and five quick Shift presses open Windows' "Turn on Sticky Keys?"
+        // dialog over the game (right Shift held 8 s does the same for Filter Keys, Num Lock held 5 s for Toggle Keys).
+        // Microsoft's "Disabling Shortcut Keys in Games" pattern: while the game window has the focus, clear only the
+        // HOTKEYACTIVE and CONFIRMHOTKEY flags of each feature that is not already on (one that is on is in use: left
+        // alone), and put the user's values back when the window loses the focus and when the game ends. Written with
+        // fWinIni = 0, never to the user profile, so even a killed process changes nothing past sign-out; the restore
+        // also runs from atexit, from the crash paths (unhandled exception, abort, terminate) as far as they run, and when
+        // the console the game runs in is closed (Ctrl+C, Ctrl+Break, its window closed, sign-out).
+        struct AccessKeys // STICKYKEYS / TOGGLEKEYS {cbSize, dwFlags}; FILTERKEYS adds four DWORDs (wait/delay/repeat/bounce)
+        {
+            unsigned int size = 0u;
+            unsigned long flags = 0u;
+            unsigned long filterTimes[4]{};
+        };
+        struct AccessFeature
+        {
+            unsigned int get; // SPI_GET...
+            unsigned int set; // SPI_SET...
+            unsigned int size;
+        };
+        constexpr std::array<AccessFeature, 3> kAccessFeatures{{
+            {0x003Au, 0x003Bu, 8u},  // SPI_GETSTICKYKEYS / SPI_SETSTICKYKEYS, sizeof(STICKYKEYS)
+            {0x0034u, 0x0035u, 8u},  // SPI_GETTOGGLEKEYS / SPI_SETTOGGLEKEYS, sizeof(TOGGLEKEYS)
+            {0x0032u, 0x0033u, 24u}, // SPI_GETFILTERKEYS / SPI_SETFILTERKEYS, sizeof(FILTERKEYS)
+        }};
+        constexpr unsigned long kAccessFeatureOn = 0x1u; // SKF_STICKYKEYSON / TKF_TOGGLEKEYSON / FKF_FILTERKEYSON
+        constexpr unsigned long kAccessHotkeyFlags = 0x4u | 0x8u; // ..._HOTKEYACTIVE | ..._CONFIRMHOTKEY (same bits in all three)
+        std::array<AccessKeys, 3> g_accessSaved{}; // the user's values, written before the feature's bit is set
+        std::atomic<uint32_t> g_accessChanged{0u}; // bit i: kAccessFeatures[i] holds our value now
+        std::atomic<bool> g_accessFinal{false};    // restored for good: never cleared again
+        bool g_accessFocused = false;              // window thread: the focus updateAccessKeys last acted on
+
+        void restoreAccessKeys() noexcept
+        {
+#if defined(_WIN32)
+            const uint32_t changed = g_accessChanged.exchange(0u, std::memory_order_acq_rel);
+            for (size_t i = 0; i < kAccessFeatures.size(); ++i)
+                if ((changed & (1u << i)) != 0u)
+                {
+                    AccessKeys saved = g_accessSaved[i];
+                    SystemParametersInfoW(kAccessFeatures[i].set, kAccessFeatures[i].size, &saved, 0u);
+                }
+#endif
+        }
+
+        // For good, the game is ending: sample() never clears them again (it re-checks after a clear, so a clear racing
+        // this on the window thread is undone too). Any thread.
+        void restoreAccessKeysFinal() noexcept
+        {
+            g_accessFinal.store(true, std::memory_order_release);
+            restoreAccessKeys();
+        }
+
+#if defined(_WIN32)
+        // The crash paths chain to whatever was installed before (godhand main's crash reporter, the CRT's filter).
+        Ps2xTopLevelExceptionFilter g_previousCrashFilter = nullptr;
+        void(__cdecl *g_previousAbortHandler)(int) = nullptr;
+        std::terminate_handler g_previousTerminate = nullptr;
+
+        long __stdcall accessCrashFilter(_EXCEPTION_POINTERS *info)
+        {
+            restoreAccessKeysFinal();
+            return g_previousCrashFilter ? g_previousCrashFilter(info) : 0 /* EXCEPTION_CONTINUE_SEARCH */;
+        }
+
+        void __cdecl accessAbortHandler(int signal)
+        {
+            restoreAccessKeysFinal();
+            if (g_previousAbortHandler != nullptr && g_previousAbortHandler != SIG_DFL && g_previousAbortHandler != SIG_IGN &&
+                g_previousAbortHandler != SIG_ERR)
+                g_previousAbortHandler(signal);
+        }
+
+        void accessTerminate()
+        {
+            restoreAccessKeysFinal();
+            if (g_previousTerminate)
+                g_previousTerminate();
+            std::abort();
+        }
+
+        // Review 2026-10-18: godhand.exe is a console program and Start-God-Hand.cmd runs it in the minimized "God Hand
+        // log" console. Closing that window (or Ctrl+C / Ctrl+Break in it) ends the process through ExitProcess: no
+        // atexit, no end of the run loop, so the hotkeys stayed off until sign-out. Runs on a thread of its own; FALSE
+        // lets the default handling (the exit) go on.
+        int __stdcall accessConsoleHandler(unsigned long)
+        {
+            restoreAccessKeysFinal();
+            return 0;
+        }
+
+        // Once, the first time a hotkey is cleared: hidden runs (never focused) keep their crash handling untouched.
+        void installAccessRestoreHooks()
+        {
+            static bool installed = false;
+            if (installed)
+                return;
+            installed = true;
+            std::atexit([] { restoreAccessKeysFinal(); });
+            g_previousCrashFilter = SetUnhandledExceptionFilter(&accessCrashFilter);
+            g_previousAbortHandler = std::signal(SIGABRT, &accessAbortHandler);
+            g_previousTerminate = std::set_terminate(&accessTerminate);
+            SetConsoleCtrlHandler(&accessConsoleHandler, 1);
+        }
+#endif
+
+        // Once per sample(). The focus is read from Windows too: raylib's flag stays "focused" for a window created
+        // hidden (hidden test runs), and those must never touch the user's settings.
+        void updateAccessKeys()
+        {
+#if defined(_WIN32)
+            if (g_accessFinal.load(std::memory_order_relaxed))
+                return;
+            const bool focused = IsWindowReady() && !IsWindowHidden() && IsWindowFocused() && GetWindowHandle() != nullptr &&
+                                 GetForegroundWindow() == GetWindowHandle();
+            if (focused == g_accessFocused)
+                return;
+            g_accessFocused = focused;
+            if (!focused)
+                return restoreAccessKeys();
+            installAccessRestoreHooks();
+            for (size_t i = 0; i < kAccessFeatures.size(); ++i)
+            {
+                const AccessFeature &feature = kAccessFeatures[i];
+                AccessKeys current;
+                current.size = feature.size;
+                if (!SystemParametersInfoW(feature.get, feature.size, &current, 0u) || (current.flags & kAccessFeatureOn) != 0u ||
+                    (current.flags & kAccessHotkeyFlags) == 0u)
+                    continue;
+                g_accessSaved[i] = current; // re-read at every focus gain: a change made in Settings meanwhile is kept
+                AccessKeys off = current;
+                off.flags &= ~kAccessHotkeyFlags;
+                if (SystemParametersInfoW(feature.set, feature.size, &off, 0u))
+                    g_accessChanged.fetch_or(1u << i, std::memory_order_acq_rel);
+            }
+            // A final restore on another thread (console closed, crash) between a clear and its bit missed that clear.
+            if (g_accessFinal.load(std::memory_order_acquire))
+                return restoreAccessKeys();
+            static bool logged = false;
+            if (!logged && g_accessChanged.load(std::memory_order_relaxed) != 0u)
+            {
+                logged = true;
+                std::cerr << "[input] Sticky/Toggle/Filter Keys shortcut keys off while the game window has the focus" << std::endl;
+            }
+#endif
+        }
     }
 
     void setRightStickInvertDefault(uint32_t axes)
@@ -1487,6 +1912,7 @@ namespace ps2_host_input
         updateChordGate(); // right after the controllers are read: Back/Start never reach the game a frame early
         updateVibration();
         sampleMouse();
+        updateAccessKeys(); // sweep CR-9: also runs while minimized (the run loop's minimized branch calls sample())
         // Only the players that have a (port, slot): 2 without a multitap, 5 with one, 8 with two.
         const uint32_t taps = multitapPorts();
         const uint32_t players = 2u + ((taps & 1u) ? 3u : 0u) + ((taps & 2u) ? 3u : 0u);
@@ -1613,6 +2039,11 @@ namespace ps2_host_input
         g_chordGateEnabled.store(enabled, std::memory_order_relaxed);
     }
 
+    void restoreShortcutKeys()
+    {
+        restoreAccessKeysFinal(); // sample() never clears them again
+    }
+
     void setTestButtons(uint16_t buttons)
     {
         g_testButtons.store(buttons, std::memory_order_relaxed);
@@ -1699,6 +2130,31 @@ namespace ps2_host_input
             if (envPad(pad))
                 std::cerr << "[controls] PS2X_PAD" << pad + 1u << " is set in the environment: player " << pad + 1u
                           << " uses the PS2X_PAD" << pad + 1u << "_* variables, not the controls file" << std::endl;
+    }
+
+    // ---- button prompts (any thread) ---------------------------------------------------------------------------------
+    namespace prompts
+    {
+        uint32_t generation()
+        {
+            return g_promptGeneration.load(std::memory_order_acquire);
+        }
+
+        Snapshot snapshot()
+        {
+            std::lock_guard<std::mutex> lock(g_promptMutex);
+            return g_prompts;
+        }
+
+        Device lastDevice()
+        {
+            return g_promptDevice.load(std::memory_order_relaxed);
+        }
+
+        PadStyle padStyle()
+        {
+            return g_promptStyle.load(std::memory_order_relaxed);
+        }
     }
 
     namespace controls

@@ -53,6 +53,7 @@ u32 ps2_ipu_in_space(void);
 u32 ps2_ipu_out_avail(void);
 u32 ps2_ipu_want(void);
 u32 ps2_ipu_out_pos(void);
+u64 ps2_ipu_macroblocks(void);
 void ps2_ipu_report(void);
 void ps2_ipu_state_save(ps2_state_put put, void *ud);
 

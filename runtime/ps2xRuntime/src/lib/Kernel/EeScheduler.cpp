@@ -1751,13 +1751,61 @@ uint32_t EeScheduler::invocationStackTop()
     {
         return existing->second;
     }
-    const uint32_t top = m_runtime.reserveAsyncCallbackStack(ps2x::kernel_memory::kCallbackStackSize, 16u);
+    // God Hand 2026-10-18: the pool (kCallbackStackFloor..Top) holds only 22 stacks of kCallbackStackSize, and thread ids
+    // only grow (allocateThreadId), so every new thread that ever ran an invocation (an interrupt handler, an RPC end
+    // callback...) kept one forever. After ~30 minutes with save-menu visits the user's game exited with "EE invocation
+    // stack space exhausted" while opening the save menu. Stacks whose (thread, depth) is not in use any more are now
+    // reused: first the free list, then new space, then a reclaim pass.
+    uint32_t top = 0u;
+    if (!m_freeInvocationStacks.empty())
+    {
+        top = m_freeInvocationStacks.back();
+        m_freeInvocationStacks.pop_back();
+    }
+    else
+    {
+        top = m_runtime.reserveAsyncCallbackStack(ps2x::kernel_memory::kCallbackStackSize, 16u);
+    }
+    if (top == 0u && reclaimInvocationStacks() != 0u)
+    {
+        top = m_freeInvocationStacks.back();
+        m_freeInvocationStacks.pop_back();
+    }
     if (top == 0u)
     {
         throw std::runtime_error("EE invocation stack space exhausted");
     }
     m_invocationStackTops.emplace(key, top);
     return top;
+}
+
+size_t EeScheduler::reclaimInvocationStacks()
+{
+    // A stack is in use while its thread exists and has an invocation at that depth (index `depth` of invocations,
+    // whose $sp came from this key when it was pushed). Deleted threads and finished depths give theirs back.
+    size_t reclaimed = 0u;
+    for (auto it = m_invocationStackTops.begin(); it != m_invocationStackTops.end();)
+    {
+        const int id = static_cast<int>(static_cast<uint32_t>(it->first >> 32u));
+        const size_t depth = static_cast<uint32_t>(it->first);
+        const auto thread = m_threads.find(id);
+        if (thread != m_threads.end() && thread->second.invocations.size() > depth)
+        {
+            ++it;
+            continue;
+        }
+        m_freeInvocationStacks.push_back(it->second);
+        it = m_invocationStackTops.erase(it);
+        ++reclaimed;
+    }
+    static uint32_t logsLeft = 8u;
+    if (logsLeft != 0u)
+    {
+        --logsLeft;
+        std::fprintf(stderr, "[ee] invocation stacks: %zu reclaimed from finished threads/depths, %zu still in use\n", reclaimed,
+                     m_invocationStackTops.size());
+    }
+    return reclaimed;
 }
 
 int EeScheduler::addIrqHandler(bool dmac,
@@ -2708,6 +2756,15 @@ void EeScheduler::processDueDeadlines()
                         windowStart = firedAt;
                     }
                 }
+                // PS2X_VBLANK_CYCLE_LOG=1 (diagnostic): every 300 fields, the vblank count against EE time (the clock
+                // the IOP and the SPU2 run on) and how late in EE cycles this vblank fired.
+                static const bool cycleLog = [] { const char *v = std::getenv("PS2X_VBLANK_CYCLE_LOG"); return v && *v == '1'; }();
+                if (cycleLog && (m_vsyncTick % 300u) == 0u)
+                    std::fprintf(stderr, "[vblank-cycle] tick %llu ee %.4f s deadline %.4f s late %.3f ms fields-by-cycle %.1f\n",
+                                 static_cast<unsigned long long>(m_vsyncTick), static_cast<double>(m_eeCycle) / kEeClockHz,
+                                 static_cast<double>(scheduled.deadlineCycle) / kEeClockHz,
+                                 1000.0 * static_cast<double>(m_eeCycle - scheduled.deadlineCycle) / kEeClockHz,
+                                 static_cast<double>(m_eeCycle) / static_cast<double>(vblankPeriodCycles()));
                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
                               hostStart + kVBlankDuration,
                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});

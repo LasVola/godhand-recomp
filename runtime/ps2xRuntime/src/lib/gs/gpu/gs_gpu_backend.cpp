@@ -1993,7 +1993,14 @@ struct GSGpuBackend::Impl
         resetBatch();
     }
 
-    uint32_t addState(const GSDrawState &state)
+    // nearest: draw this state with the point filter whatever TEX1 says (a sprite whose GS filter weights are all 0).
+    uint32_t addState(const GSDrawState &state, bool nearest = false)
+    {
+        return addState(state, nearest, state.context.clamp);
+    }
+
+    // clamp: the CLAMP register value to store (a sprite may narrow it to its 1x tap footprint).
+    uint32_t addState(const GSDrawState &state, bool nearest, uint64_t clamp)
     {
         const GSContext &ctx = state.context;
         std::array<uint32_t, kStateWords> s{};
@@ -2008,7 +2015,7 @@ struct GSGpuBackend::Impl
         s[SScissorY] = static_cast<uint32_t>(ctx.scissor.y0) | (static_cast<uint32_t>(ctx.scissor.y1) << 16u);
         const uint32_t flags = (state.prim.iip ? FIip : 0u) | (state.prim.tme ? FTme : 0u) | (state.prim.fge ? FFge : 0u) |
                                (state.prim.abe ? FAbe : 0u) | (state.prim.fst ? FFst : 0u) | (state.pabe ? FPabe : 0u) |
-                               (state.linearFilter ? FLinear : 0u) | ((state.colclamp & 1u) == 0u ? FWrap : 0u);
+                               (state.linearFilter && !nearest ? FLinear : 0u) | ((state.colclamp & 1u) == 0u ? FWrap : 0u);
         s[SFlags] = flags;
         if (state.prim.tme)
         {
@@ -2019,8 +2026,8 @@ struct GSGpuBackend::Impl
                           (static_cast<uint32_t>(ctx.tex0.cpsm) << 16u) | (static_cast<uint32_t>(ctx.tex0.csm) << 24u);
             s[SCsa] = ctx.tex0.csa;
             s[STexSize] = static_cast<uint32_t>(state.textureWidth) | (static_cast<uint32_t>(state.textureHeight) << 16u);
-            s[SClampLo] = static_cast<uint32_t>(ctx.clamp);
-            s[SClampHi] = static_cast<uint32_t>(ctx.clamp >> 32u);
+            s[SClampLo] = static_cast<uint32_t>(clamp);
+            s[SClampHi] = static_cast<uint32_t>(clamp >> 32u);
             s[STexa] = static_cast<uint32_t>(state.texa.ta0) | (state.texa.aem ? 0x100u : 0u) | (static_cast<uint32_t>(state.texa.ta1) << 16u);
             s[SClut] = clutSlot;
             s[SEpoch] = epoch;
@@ -2227,8 +2234,48 @@ struct GSGpuBackend::Impl
         const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
         const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
 
+        // A bilinear FST sprite whose GS filter weights are 0 on every drawn pixel (1:1 copies with the usual +0.5 texel
+        // and 1/16 over-span: God Hand's sepia and depth-of-field byte shuffles) gives the top-left texel alone on the
+        // GS, so it is drawn with the point filter. The shaders' bilinear path rounds U to the nearest 1/16 and, at
+        // internal resolution, samples at sub-pixel positions: up to 25% of the next texel leaked into the 16-bit
+        // shuffle (dark lines every 8 px in the ev03 flashbacks, port_prep/gridlines). Scales above 8 keep bilinear
+        // (the half-texel shift below leaves room for sub-sample offsets up to 14/16).
+        const int64_t px0 = std::lround(v0.x * 16.0f) - ctx.xyoffset.ofx;
+        const int64_t px1 = std::lround(v1.x * 16.0f) - ctx.xyoffset.ofx;
+        const int64_t py0 = std::lround(v0.y * 16.0f) - ctx.xyoffset.ofy;
+        const int64_t py1 = std::lround(v1.y * 16.0f) - ctx.xyoffset.ofy;
+        const bool zeroWeight = state.prim.tme && state.prim.fst && state.linearFilter && scale <= 8u &&
+                                gsSpriteAxisZeroWeight(px0, px1, v0.u, v1.u, drawX0, drawX1) &&
+                                gsSpriteAxisZeroWeight(py0, py1, v0.v, v1.v, drawY0, drawY1);
+        // At internal resolution the sub-samples of the last drawn row/column read the texture up to (SCALE-1)/SCALE px
+        // past the GS sample point, so a bilinear tap can land on a texel the GS never reads at 1x. God Hand's movie
+        // sprite (640x448 IPU frame in a 1024x512 CLAMP texture, 640 -> 512 wide, V = pixel) took 19% of VRAM row 448
+        // into the last 3x row: the thin dark line under movies (port_prep/polish/movie). On CLAMP axes the taps are
+        // clamped to the whole sprite's 1x footprint with REGION_CLAMP. Use unclipped bounds so adjoining scissors
+        // share identical regions and retain cross-strip taps. 1x is unchanged; prepareTarget keeps CLAMP.
+        uint64_t clamp = ctx.clamp;
+        if (scale > 1u && state.prim.tme && state.prim.fst && state.linearFilter && !zeroWeight)
+        {
+            const int tw = static_cast<int>(state.textureWidth);
+            const int th = static_cast<int>(state.textureHeight);
+            int lo = 0;
+            int hi = 0;
+            if ((clamp & 3u) == 1u && gsSpriteAxisFootprint(px0, px1, v0.u, v1.u, unclippedX0, unclippedX1, lo, hi) && (lo > 0 || hi < tw - 1))
+            {
+                lo = std::clamp(lo, 0, tw - 1);
+                hi = std::clamp(hi, lo, tw - 1);
+                clamp = (clamp & ~0xFFFFF3ull) | 2ull | (static_cast<uint64_t>(lo) << 4u) | (static_cast<uint64_t>(hi) << 14u);
+            }
+            if (((clamp >> 2u) & 3u) == 1u && gsSpriteAxisFootprint(py0, py1, v0.v, v1.v, unclippedY0, unclippedY1, lo, hi) && (lo > 0 || hi < th - 1))
+            {
+                lo = std::clamp(lo, 0, th - 1);
+                hi = std::clamp(hi, lo, th - 1);
+                clamp = (clamp & ~((0xFFFFFull << 24u) | 0xCull)) | 8ull | (static_cast<uint64_t>(lo) << 24u) |
+                        (static_cast<uint64_t>(hi) << 34u);
+            }
+        }
         prepareTarget(state, drawX0, drawY0, drawX1, drawY1);
-        const uint32_t s = addState(state);
+        const uint32_t s = addState(state, zeroWeight, clamp);
         uint32_t *p = newPrim(PrimSprite, s);
         p[1] = static_cast<uint32_t>(drawX0) | (static_cast<uint32_t>(drawX1) << 16u);
         p[2] = static_cast<uint32_t>(drawY0) | (static_cast<uint32_t>(drawY1) << 16u);
@@ -2241,10 +2288,14 @@ struct GSGpuBackend::Impl
             float u0f, v0f, u1f, v1f;
             if (state.prim.fst)
             {
-                u0f = static_cast<float>(v0.u) / 16.0f;
-                v0f = static_cast<float>(v0.v) / 16.0f;
-                u1f = static_cast<float>(v1.u) / 16.0f;
-                v1f = static_cast<float>(v1.v) / 16.0f;
+                // zeroWeight: half a texel lower (exact in float), so every sub-sample of pixel p, not only its corner,
+                // falls inside the texel T the GS reads: the point path then returns T at any scale (pages drawn at
+                // internal resolution through the corner rule in the sample's own plane, uploaded pages from plane 0).
+                const float shift = zeroWeight ? 0.5f : 0.0f;
+                u0f = static_cast<float>(v0.u) / 16.0f - shift;
+                v0f = static_cast<float>(v0.v) / 16.0f - shift;
+                u1f = static_cast<float>(v1.u) / 16.0f - shift;
+                v1f = static_cast<float>(v1.v) / 16.0f - shift;
             }
             else
             {

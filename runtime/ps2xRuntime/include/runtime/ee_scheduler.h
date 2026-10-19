@@ -365,6 +365,8 @@ public:
     [[noreturn]] void invokeCurrentSequence(std::vector<GuestInvocation> invocations);
     [[nodiscard]] bool hasInvocation(GuestInvocationKind kind, uint64_t tag) const;
     [[nodiscard]] uint32_t invocationStackTop();
+    // Moves the stacks of (thread, depth) keys no longer in use to m_freeInvocationStacks; returns how many.
+    size_t reclaimInvocationStacks();
 
     int addIrqHandler(bool dmac,
                       uint32_t cause,
@@ -525,6 +527,9 @@ private:
     uint32_t m_gsVSyncCallbackGp = 0;
     uint32_t m_gsVSyncCallbackSp = 0;
     std::unordered_map<uint64_t, uint32_t> m_invocationStackTops;
+    // Reclaimed invocation stacks, reused before new pool space. Not saved in savestates: cleared on load, because a
+    // loaded pool top can be below them (they would be handed out twice).
+    std::vector<uint32_t> m_freeInvocationStacks;
     std::atomic<uint64_t> m_nextDeadlineCycle{0};
     bool m_hostPacing = false;
     uint64_t m_pacingCheckCycle = 0;

@@ -528,11 +528,49 @@ namespace ps2x::iop::detail
             const auto output = mixCore(1u, core0);
             if (output[0] != 0 || output[1] != 0)
                 ++g_statNonZero;
+            reportSilentDrop(core0, output);
             m_audioBuffer[m_audioFrames * 2u] = static_cast<int16_t>(output[0]);
             m_audioBuffer[m_audioFrames * 2u + 1u] = static_cast<int16_t>(output[1]);
             if (++m_audioFrames == m_audioBuffer.size() / 2u)
                 flushAudio();
         }
+    }
+
+    // God Hand 2026-10-18 diagnosis: the whole mix went exactly silent for 8-10 ms about every 0.4 s in stage 2 while
+    // the game was loud around it. When the output drops to exact zero right after loud sound, log (rate-limited) what
+    // the mixer saw: ATTR/MMIX per core, MVOL/AVOL/BVOL/EVOL as written, core 0's output and how many voices sound.
+    void IopSpu2::reportSilentDrop(const std::array<int32_t, 2> &core0, const std::array<int32_t, 2> &output)
+    {
+        static uint64_t loudUntil = 0u; // sample index until which the recent output counts as loud
+        static uint64_t nextLog = 0u;
+        static uint32_t logsLeft = 12u;
+        static uint64_t sampleIndex = 0u;
+        ++sampleIndex;
+        const int32_t peak = std::max(std::abs(output[0]), std::abs(output[1]));
+        if (peak >= 1500)
+        {
+            loudUntil = sampleIndex + 96u; // within 2 ms of loud output
+            return;
+        }
+        if (output[0] != 0 || output[1] != 0 || sampleIndex > loudUntil || logsLeft == 0u || sampleIndex < nextLog)
+            return;
+        --logsLeft;
+        nextLog = sampleIndex + 48000u / 2u;
+        loudUntil = 0u;
+        uint32_t sounding[kCores] = {};
+        for (uint32_t core = 0u; core < kCores; ++core)
+            for (uint32_t voice = 0u; voice < kVoices; ++voice)
+                if (m_voices[core][voice].phase != 0u && m_voices[core][voice].envelope > 0)
+                    ++sounding[core];
+        const uint32_t s0 = kSharedBase;
+        const uint32_t s1 = kSharedBase + 0x28u;
+        std::fprintf(stderr,
+                     "[spu2-silence] output dropped to exact 0 after loud sound (t=%.3f s): ATTR %04x/%04x MMIX %04x/%04x "
+                     "MVOL %04x,%04x/%04x,%04x EVOL %04x,%04x/%04x,%04x AVOL1 %04x,%04x BVOL1 %04x,%04x core0 out %d,%d voices %u/%u ADMA %u/%u\n",
+                     static_cast<double>(m_cycle) / (768.0 * 48000.0), reg(0x19Au), reg(kCoreStride + 0x19Au), reg(0x198u),
+                     reg(kCoreStride + 0x198u), reg(s0), reg(s0 + 2u), reg(s1), reg(s1 + 2u), reg(s0 + 4u), reg(s0 + 6u),
+                     reg(s1 + 4u), reg(s1 + 6u), reg(s1 + 8u), reg(s1 + 10u), reg(s1 + 12u), reg(s1 + 14u), core0[0], core0[1],
+                     sounding[0], sounding[1], autoDma(0u) ? 1u : 0u, autoDma(1u) ? 1u : 0u);
     }
 
     void IopSpu2::flushAudio()
@@ -616,8 +654,27 @@ namespace ps2x::iop::detail
                 saturate(dry[channel]) + scale(reverb[channel], static_cast<int16_t>(reg(shared + 4u + channel * 2u)));
             const int32_t master = volume(reg(shared + channel * 2u));
             output[channel] = scale(saturate(mixed), master);
-            if (!(reg(base + 0x19Au) & 0x4000u))
-                output[channel] = 0;
+        }
+        // ATTR bit 14 ("mute"). God Hand 2026-10-18: the whole mix went digitally silent for 8-10 ms about every 0.4 s
+        // in stage 2 fights and the God Reel menu (logs/audio_out_last.pcm, the user's "sound cuts out"). Exact zero
+        // under a reverb tail can only come from this final gate (or MVOL 0). PCSX2 ignores the bit (spu2sys.cpp
+        // REG_C_ATTR: "thiscore.Mute = 0"), because drivers rewrite ATTR around their transfers. Ignored here too;
+        // PS2X_SPU2_ATTR_MUTE=1 brings the gate back. The first times it would have muted are logged.
+        if (!(reg(base + 0x19Au) & 0x4000u) && (output[0] != 0 || output[1] != 0))
+        {
+            static const bool honourMute = [] { const char *v = std::getenv("PS2X_SPU2_ATTR_MUTE"); return v && *v == '1'; }();
+            static uint32_t logsLeft = 6u;
+            static uint64_t nextLog = 0u; // in 48 kHz samples (768 IOP cycles each): at most one line per 0.25 s
+            const uint64_t now = m_cycle / 768u;
+            if (logsLeft != 0u && now >= nextLog)
+            {
+                --logsLeft;
+                nextLog = now + 48000u / 4u;
+                std::fprintf(stderr, "[spu2] core%u ATTR=%04x has the mute bit (14) clear while sounding: %s\n", core,
+                             reg(base + 0x19Au), honourMute ? "muted (PS2X_SPU2_ATTR_MUTE=1)" : "ignored, as PCSX2 does");
+            }
+            if (honourMute)
+                output = {};
         }
         return output;
     }

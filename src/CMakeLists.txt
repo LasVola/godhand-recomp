@@ -31,14 +31,18 @@ file(GLOB GODHAND_GENERATED_SOURCES CONFIGURE_DEPENDS "${GODHAND_GENERATED_DIR}/
 
 set(GODHAND_HOST_SOURCES
     main.cpp
+    godhand/button_prompt_sheets.cpp
+    godhand/button_prompts.cpp
     godhand/call_profile.cpp
     godhand/call_trace.cpp
+    godhand/movie_watchdog.cpp
     godhand/function_hooks.cpp
     godhand/game_disc.cpp
     godhand/hang_dump.cpp
     godhand/hle_bindings.cpp
     godhand/host_window.cpp
     godhand/log.cpp
+    godhand/prompt_art.cpp
     godhand/sha256.cpp
     godhand/thread_policy.cpp
 )

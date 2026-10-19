@@ -64,4 +64,14 @@ namespace ps2_host_gamepads
         std::string name;
     };
     [[nodiscard]] std::vector<DeviceInfo> devices();
+
+    // The button art a controller's name points to (button prompts; GLFW gives no controller type, only the name).
+    // Unknown: not connected, or the name says neither.
+    enum class Style
+    {
+        Unknown,
+        Xbox,
+        PlayStation
+    };
+    [[nodiscard]] Style style(int device);
 }

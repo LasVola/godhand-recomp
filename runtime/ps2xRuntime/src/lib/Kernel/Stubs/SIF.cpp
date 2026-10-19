@@ -134,10 +134,31 @@ namespace ps2_stubs
         // spins "while (sceSifDmaStat(id) < 0)" and only exits on that first non-negative status. So each id
         // reports "in progress" (0) to its first poll and "done" (-1) after that; unknown/old ids report done.
         constexpr uint32_t kSifDmaFreshIdSlots = 64u;
-        std::array<uint32_t, kSifDmaFreshIdSlots> g_sifDmaFreshIds{};
+        struct FreshSifDma
+        {
+            uint32_t id = 0u;
+            uint64_t busyUntilCycle = 0u; // EE cycle at which the transfer would have finished on hardware
+        };
+        std::array<FreshSifDma, kSifDmaFreshIdSlots> g_sifDmaFreshIds{};
         uint32_t g_sifDmaFreshIdNext = 0u;
 
-        uint32_t allocateSifDmaTransferId()
+        // PS2X_SIF_DMA_BUSY (default on): the "in progress" answer to the first poll is only given while the transfer
+        // could still be running on hardware: 0.6M EE cycles (2 ms) + 32 per byte (~9 MB/s), generous next to
+        // PCSX2, which finishes a SIF DMA within a few hundred cycles. A later poll sees it done, as on the console.
+        // The IRX loader polls in the next instructions and still sees it queued once. CRI ADX's EE transfer server
+        // (0x340130) polls each PCM transfer it started one vblank later and gives up for that vblank while one is
+        // in progress: with "in progress" for every first poll, each transfer into the IOP stream buffer reached
+        // CRI's IOP mixer one field later than on hardware (measured: committed 3 DTX exchanges after the write), the feed
+        // ran 1/129 short of 48 kHz and the PSM mixer filled a 256/512-sample unit with exact zeros twice every 2.75 s
+        // of title music (in play every ~0.4 s: "sound cuts out"). 2026-10-18, port_prep/adx_gaps/EXPERIMENTS.md:
+        // 28 -> 0 zero bursts per 50 s boot. PS2X_SIF_DMA_BUSY=0: old behaviour.
+        bool sifDmaBusyWindow()
+        {
+            static const bool enabled = [] { const char *v = std::getenv("PS2X_SIF_DMA_BUSY"); return !(v && *v == '0'); }();
+            return enabled;
+        }
+
+        uint32_t allocateSifDmaTransferId(uint64_t cycle, uint64_t bytes)
         {
             std::lock_guard<std::mutex> lock(g_sifDmaTransferMutex);
             uint32_t id = g_nextSifDmaTransferId++;
@@ -145,23 +166,26 @@ namespace ps2_stubs
             {
                 id = g_nextSifDmaTransferId++;
             }
-            g_sifDmaFreshIds[g_sifDmaFreshIdNext++ % kSifDmaFreshIdSlots] = id;
+            constexpr uint64_t kSifDmaSetupCycles = 600000u;
+            constexpr uint64_t kSifDmaCyclesPerByte = 32u;
+            g_sifDmaFreshIds[g_sifDmaFreshIdNext++ % kSifDmaFreshIdSlots] =
+                FreshSifDma{id, cycle + kSifDmaSetupCycles + std::min<uint64_t>(bytes, 1u << 20) * kSifDmaCyclesPerByte};
             return id;
         }
 
-        bool consumeFreshSifDmaTransferId(uint32_t id)
+        bool consumeFreshSifDmaTransferId(uint32_t id, uint64_t cycle)
         {
             if (id == 0u)
             {
                 return false;
             }
             std::lock_guard<std::mutex> lock(g_sifDmaTransferMutex);
-            for (uint32_t &slot : g_sifDmaFreshIds)
+            for (FreshSifDma &slot : g_sifDmaFreshIds)
             {
-                if (slot == id)
+                if (slot.id == id)
                 {
-                    slot = 0u;
-                    return true;
+                    slot.id = 0u;
+                    return !sifDmaBusyWindow() || cycle < slot.busyUntilCycle;
                 }
             }
             return false;
@@ -355,12 +379,11 @@ namespace ps2_stubs
     void sceSifDmaStat(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         (void)rdram;
-        (void)runtime;
         const uint32_t trid = getRegU32(ctx, 4);
 
         // Transfers are applied immediately by sceSifSetDma in this runtime; the first poll of a fresh id still
-        // reports "in progress" (see consumeFreshSifDmaTransferId).
-        setReturnS32(ctx, consumeFreshSifDmaTransferId(trid) ? 0 : -1);
+        // reports "in progress" while the transfer would still be running on hardware (see sifDmaBusyWindow).
+        setReturnS32(ctx, consumeFreshSifDmaTransferId(trid, runtime ? runtime->eeScheduler().currentCycle() : 0u) ? 0 : -1);
     }
 
     void sceSifExecRequest(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -695,8 +718,9 @@ namespace ps2_stubs
             for (uint32_t i = 0; i < count; ++i)
             {
                 const uint32_t desc = listAddr + i * 16;
-                std::fprintf(stderr, "[ee-sifdma] ee 0x%08x -> iop 0x%06x size=%u attr=0x%x ra=0x%x\n", READ32(desc + 0),
-                             READ32(desc + 4), READ32(desc + 8), READ32(desc + 12), getRegU32(ctx, 31));
+                std::fprintf(stderr, "[ee-sifdma] ee 0x%08x -> iop 0x%06x size=%u attr=0x%x ra=0x%x eecycle=%llu\n", READ32(desc + 0),
+                             READ32(desc + 4), READ32(desc + 8), READ32(desc + 12), getRegU32(ctx, 31),
+                             static_cast<unsigned long long>(runtime ? runtime->eeScheduler().currentCycle() : 0u));
             }
         }
 
@@ -807,7 +831,10 @@ namespace ps2_stubs
 
         ps2_syscalls::dispatchDmacHandlersForCause(rdram, runtime, 5u);
 
-        setReturnS32(ctx, static_cast<int32_t>(allocateSifDmaTransferId()));
+        uint64_t transferBytes = 0u;
+        for (uint32_t i = 0; i < count && i < 32u; ++i)
+            transferBytes += READ32(listAddr + i * 16u + 8u);
+        setReturnS32(ctx, static_cast<int32_t>(allocateSifDmaTransferId(runtime ? runtime->eeScheduler().currentCycle() : 0u, transferBytes)));
     }
 
     void sceSifSetIopAddr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)

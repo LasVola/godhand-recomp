@@ -16,6 +16,7 @@
 #include "runtime/gs/gs_pcsx2_backend.h"
 #include "runtime/gs/gs_threaded_backend.h"
 #include "godhand/call_profile.h"
+#include "godhand/button_prompts.h"
 #include "godhand/call_trace.h"
 #include "godhand/default_ini.h" // generated from godhand.ini by src/CMakeLists.txt
 #include "godhand/function_hooks.h"
@@ -24,6 +25,7 @@
 #include "godhand/hle_bindings.h"
 #include "godhand/host_window.h"
 #include "godhand/log.h"
+#include "godhand/movie_watchdog.h"
 #include "godhand/thread_policy.h"
 
 #if defined(PS2X_ENABLE_DEBUG_UI)
@@ -698,6 +700,8 @@ int main(int argc, char *argv[])
 #endif
         godhand::installDllLoadLogger(runtime); // observe only: [DLL] lines + GODHAND_DLL_LOG CSV
         godhand::installHiresFlipCopy(runtime); // PS2X_GS_SCALE > 1 only: flip copy without the flicker filter
+        godhand::button_prompts::install(runtime); // the button prompts show the bound keys (GODHAND_PROMPTS=0: PS2 art)
+        godhand::installMovieWatchdog(runtime); // sweep R3: ending/movie-list movie polls cannot spin forever
         // TODO(godhand): a "game_frame" observer on God Hand's main-loop function (ps2_host_display::noteGameFrame for the
         // F3 overlay), as Urban did on 0x128dc0. The address is not known yet.
         godhand::hangdump::setRuntime(&runtime);

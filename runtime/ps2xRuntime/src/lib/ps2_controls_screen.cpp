@@ -103,6 +103,25 @@ namespace ps2x::controls
         Clock::time_point g_captureStart{};
         int g_pendingPadDevice = -1; // Controller column: Back or Start pressed while capturing, recorded on release
         int g_pendingPadButton = 0;
+        int g_pendingKey = 0; // key columns: Shift/Ctrl/Alt pressed alone while capturing, recorded on release (CR-7)
+        bool g_prevFocused = false;
+
+        // Sweep CR-7: the last capture, undone when the window loses the focus right after it (Windows took that key).
+        struct LastCapture
+        {
+            int row = -1; // -1: none
+            std::vector<std::string> before;
+            std::string binding;
+            Clock::time_point at{};
+        };
+        LastCapture g_lastCapture;
+        constexpr auto kFocusUndoWindow = std::chrono::milliseconds(500);
+
+        // Modifiers: Shift/Ctrl/Alt are bindable (recorded on release); the Windows keys are not, only held.
+        constexpr std::array<int, 8> kModifierKeys{KEY_LEFT_SHIFT, KEY_RIGHT_SHIFT, KEY_LEFT_CONTROL, KEY_RIGHT_CONTROL,
+                                                   KEY_LEFT_ALT,   KEY_RIGHT_ALT,   KEY_LEFT_SUPER,   KEY_RIGHT_SUPER};
+        constexpr const char *kComboStatus =
+            "Key combinations (Alt+Tab, Alt+F4, Windows key...) are not recorded: press one key on its own  (Esc cancels)";
 
         // Controller state of the previous tick (edges), focused window only.
         struct PadSnapshot
@@ -189,6 +208,20 @@ namespace ps2x::controls
             return false;
         }
 
+        bool isModifier(int code)
+        {
+            return std::find(kModifierKeys.begin(), kModifierKeys.end(), code) != kModifierKeys.end();
+        }
+
+        // A modifier key other than `except` is held.
+        bool modifierHeld(int except = 0)
+        {
+            for (int code : kModifierKeys)
+                if (code != except && IsKeyDown(code))
+                    return true;
+            return false;
+        }
+
         void setStatus(std::string text)
         {
             g_status = std::move(text);
@@ -240,6 +273,8 @@ namespace ps2x::controls
             g_open = false;
             g_capture = false;
             g_f5Armed = false;
+            g_pendingKey = 0;
+            g_lastCapture.row = -1; // saved: no longer undone by a focus loss
             ps2_host_input::setOverlayOpen(false);
             std::cerr << "[controls] closed" << std::endl;
         }
@@ -279,6 +314,8 @@ namespace ps2x::controls
         void captured(const std::string &binding)
         {
             g_capture = false;
+            g_pendingKey = 0;
+            g_lastCapture = {g_row, pc::bindings(kPad, kRows[static_cast<size_t>(g_row)].key), binding, Clock::now()};
             Split split = splitRow(g_row);
             std::vector<std::string> &list = g_col < kKeyColumns ? split.keys : split.pads;
             size_t at = g_col < kKeyColumns ? static_cast<size_t>(g_col) : 0u;
@@ -336,6 +373,7 @@ namespace ps2x::controls
             g_capture = true;
             g_captureStart = Clock::now();
             g_pendingPadDevice = -1;
+            g_pendingKey = 0;
             setStatus(g_col < kKeyColumns ? "Press a key or mouse button for " + rowLabel(g_row) + "  (Esc cancels)"
                                           : "Press a controller button or move a stick/trigger for " + rowLabel(g_row) +
                                                 "  (Back+Start or Esc cancels)");
@@ -400,7 +438,28 @@ namespace ps2x::controls
         void cancelCapture(const char *why)
         {
             g_capture = false;
+            g_pendingKey = 0;
             setStatus(why);
+        }
+
+        // Sweep CR-7: the window lost the focus (Alt+Tab, the Windows key, a click on another window, a shortcut that
+        // opened one). A capture in progress is cancelled, so neither the keys of that shortcut nor the click that brings
+        // the window back are recorded (nor a held Back/Start, which the focus-gated snapshot would show as released);
+        // a capture made just before is undone: Windows acted on that key, so it is no binding (Print opens the
+        // Snipping Tool). Only a change of focus counts, so a window that never had it (hidden self-test) is unaffected.
+        void focusLost()
+        {
+            if (g_capture)
+                cancelCapture("Cancelled: the game window lost the focus.");
+            if (g_lastCapture.row >= 0 && Clock::now() - g_lastCapture.at < kFocusUndoWindow)
+            {
+                const size_t row = static_cast<size_t>(g_lastCapture.row);
+                pc::setBindings(kPad, kRows[row].key, g_lastCapture.before);
+                setStatus(pc::displayName(g_lastCapture.binding) + " was not kept for " + rowLabel(g_lastCapture.row) +
+                          ": the game window lost the focus right after it (a Windows shortcut?).");
+                std::cerr << "[controls] " << kRows[row].key << " = " << g_lastCapture.binding << " undone: the window lost the focus" << std::endl;
+            }
+            g_lastCapture.row = -1;
         }
 
         // While capturing: the first new key, mouse button (key columns) or controller input (Controller column).
@@ -410,15 +469,50 @@ namespace ps2x::controls
                 return cancelCapture("Cancelled.");
             if (g_col < kKeyColumns)
             {
+                // Sweep CR-7: Windows shortcuts are no bindings. Shift/Ctrl/Alt are recorded on their release, and only
+                // when nothing else was pressed meanwhile (Alt+Tab and Alt+F4 recorded LeftAlt on the press, and Alt+F4
+                // then saved it on the way out); a key, F key or mouse button pressed while a modifier or a Windows key
+                // is held is a combination and is never recorded.
+                int key = 0;
                 for (int code : pc::bindableKeys())
                     if (IsKeyPressed(code))
-                        return captured(pc::keyBinding(code));
+                    {
+                        key = code;
+                        break;
+                    }
+                bool fKey = false;
                 for (int code = KEY_F2; code <= KEY_F12; ++code)
-                    if (IsKeyPressed(code))
-                        return setStatus("F keys stay the port's shortcuts (F3 FPS, F5/F9 save state, F11 full screen...). Press another key.");
+                    fKey = fKey || IsKeyPressed(code);
+                int mouse = -1;
                 for (int button : {MOUSE_BUTTON_LEFT, MOUSE_BUTTON_RIGHT, MOUSE_BUTTON_MIDDLE})
-                    if (IsWindowFocused() && IsMouseButtonPressed(button))
-                        return captured(pc::mouseBinding(button));
+                    if (mouse < 0 && IsWindowFocused() && IsMouseButtonPressed(button))
+                        mouse = button;
+                if (g_pendingKey != 0)
+                {
+                    if ((key != 0 && key != g_pendingKey) || fKey || mouse >= 0 || modifierHeld(g_pendingKey))
+                    {
+                        g_pendingKey = 0;
+                        return setStatus(kComboStatus);
+                    }
+                    if (!IsKeyDown(g_pendingKey))
+                        return captured(pc::keyBinding(g_pendingKey));
+                    return; // still held: waiting for the release (or a second key, which makes it a combination)
+                }
+                if (key != 0 && isModifier(key))
+                {
+                    if (modifierHeld(key))
+                        return setStatus(kComboStatus);
+                    g_pendingKey = key;
+                    return setStatus("Release " + pc::displayName(pc::keyBinding(key)) + " to use it for " + rowLabel(g_row) + "  (Esc cancels)");
+                }
+                if ((key != 0 || fKey || mouse >= 0) && modifierHeld())
+                    return setStatus(kComboStatus);
+                if (key != 0)
+                    return captured(pc::keyBinding(key));
+                if (fKey)
+                    return setStatus("F keys stay the port's shortcuts (F3 FPS, F5/F9 save state, F11 full screen...). Press another key.");
+                if (mouse >= 0)
+                    return captured(pc::mouseBinding(mouse));
                 if (buttonEdge(now, ps2_host_gamepads::East))
                     return cancelCapture("Cancelled.");
                 return;
@@ -740,6 +834,55 @@ namespace ps2x::controls
             DrawTextEx(g_font, text.c_str(), Vector2{x, y}, size, 1.0f, color);
         }
 
+        // Sweep CR-8: one key or button bound to two PS2 buttons presses both (F on L3 and on another action), and the
+        // table shows it only by reading every row; the status line names it only right after a capture. The screen
+        // lists every shared key/button on a line of its own. Rebuilt only when player 1's bindings change (the names
+        // need parsing). Chords and unreadable bindings ("+n" in the table) are left out.
+        const std::string &sharedBindingsText()
+        {
+            static std::string signature;
+            static std::string text;
+            std::vector<std::vector<std::string>> rows(static_cast<size_t>(kRowCount));
+            std::string now;
+            for (int row = 0; row < kRowCount; ++row)
+            {
+                rows[static_cast<size_t>(row)] = pc::bindings(kPad, kRows[static_cast<size_t>(row)].key);
+                for (const std::string &binding : rows[static_cast<size_t>(row)])
+                    now += binding + '\n';
+                now += '\x1f';
+            }
+            if (now == signature)
+                return text;
+            signature = std::move(now);
+            std::vector<std::pair<std::string, std::vector<int>>> uses; // display name -> rows, in table order
+            for (int row = 0; row < kRowCount; ++row)
+                for (const std::string &binding : rows[static_cast<size_t>(row)])
+                {
+                    if (pc::kindOf(binding) == pc::Kind::Other)
+                        continue;
+                    const std::string name = pc::displayName(binding);
+                    auto use = std::find_if(uses.begin(), uses.end(), [&](const auto &entry) { return entry.first == name; });
+                    if (use == uses.end())
+                        uses.push_back({name, {row}});
+                    else if (use->second.back() != row)
+                        use->second.push_back(row);
+                }
+            text.clear();
+            for (const auto &[name, list] : uses)
+            {
+                if (list.size() < 2u)
+                    continue;
+                text += text.empty() ? "Shared bindings, pressed together: " : "     ";
+                text += name + " =";
+                for (size_t i = 0; i < list.size(); ++i)
+                {
+                    const Row &entry = kRows[static_cast<size_t>(list[i])];
+                    text += (i == 0u ? " " : " + ") + (*entry.action ? std::string(entry.action) + " (" + entry.key + ")" : std::string(entry.key));
+                }
+            }
+            return text;
+        }
+
         // Self-test "shot": the back buffer as drawn so far, next to the controls file.
         void takeShot()
         {
@@ -762,9 +905,18 @@ namespace ps2x::controls
     void hostTick(bool drawable)
     {
         const bool focused = IsWindowFocused();
+        // Sweep CR-5: the Back+Start gate in ps2_host_input holds a controller's Back/Start back from the game for a
+        // moment, so a chord started with Start does not pause the game behind this screen. Only while Back+Start can
+        // open it (drawn by this renderer, window focused: snapshotPads ignores controllers otherwise), so Start has no
+        // delay when the chord could do nothing. Runs before ps2_host_input::sample(), which applies it.
+        ps2_host_input::setChordGate(drawable && focused);
+        const bool lostFocus = g_prevFocused && !focused;
+        g_prevFocused = focused;
         const PadSnapshot now = snapshotPads(focused);
         const bool chord = chordDown(now);
         const bool chordEdge = chord && !g_prevChord;
+        if (lostFocus && g_open)
+            focusLost(); // sweep CR-7
         testTick(drawable);
         if (!g_open)
         {
@@ -808,7 +960,7 @@ namespace ps2x::controls
         }
         const float screenW = static_cast<float>(GetScreenWidth());
         const float screenH = static_cast<float>(GetScreenHeight());
-        constexpr int kLines = kRowCount + 8; // title, note, header, 24 rows, status, 2 help lines, padding
+        constexpr int kLines = kRowCount + 9; // title, note, header, 24 rows, shared bindings (CR-8), status, 2 help lines, padding
         const int fontSize = std::clamp(static_cast<int>((screenH - 24.0f) / (kLines * 1.3f)), 10, 30);
         ensureFont(fontSize);
         const float size = static_cast<float>(fontSize);
@@ -882,6 +1034,9 @@ namespace ps2x::controls
         }
 
         y += line * 0.5f;
+        if (const std::string &shared = sharedBindingsText(); !shared.empty()) // sweep CR-8
+            drawText(fit(shared, size, innerW), innerX, y, size, Color{255, 128, 96, 255});
+        y += line;
         if (!g_status.empty())
             drawText(fit(g_status, size, innerW), innerX, y, size, accent);
         y += line;
@@ -895,6 +1050,9 @@ namespace ps2x::controls
 
     void shutdown()
     {
+        // Sweep CR-9: the window is closing or the run ended: the user's Sticky/Toggle/Filter Keys hotkeys come back now
+        // (main ends in _Exit, which runs no atexit handler).
+        ps2_host_input::restoreShortcutKeys();
         if (g_open)
             close(true);
         else if (pc::dirty())

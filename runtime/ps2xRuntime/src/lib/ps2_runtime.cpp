@@ -26,6 +26,7 @@
 #include "ps2_host_input.h"
 void ps2xSetLocalToHostGs(GS *gs); // ps2_memory.cpp: VIF1 FIFO image downloads
 void ps2xRequestVu1Trace(uint32_t fields); // vu/ps2_vu1_core.cpp: F8 debug capture
+bool ps2xVu1LastRunHitBudget(); // vu/ps2_vu1_core.cpp: sweep R2
 #include "ps2x/iop/iop_subsystem.h"
 
 #include <iostream>
@@ -937,6 +938,39 @@ bool PS2Runtime::isIopMemoryRange(uint32_t address, size_t size) const
     return m_iopSubsystem && m_iopSubsystem->isMemoryRange(address, size);
 }
 
+namespace
+{
+    // Sweep R2: on a PS2 the VIF1 waits at the next MSCAL/MSCNT/FLUSH* until VU1 reaches its E bit. Here VU1 runs
+    // synchronously inside the VIF command, so a microprogram that outlives one slice is continued now (what the VIF
+    // wait amounts to) instead of being left mid-program: the next MSCAL would reset its PC and drop the rest of the
+    // batch, including the strip XGKICK the stage program only issues after its vertex loop (0x340).
+    // Capped so a runaway program still returns. Both cases are logged.
+    constexpr uint32_t kVu1Slice = 65536u;
+    constexpr uint32_t kVu1MaxSlices = 16u; // 1,048,576 VU cycles (~3.6 ms of VU1 time); worst God Hand case measured 107,783
+
+    void finishVu1Program(VU1Interpreter &vu1, PS2Memory &memory, GS &gs, uint32_t top, uint32_t itop,
+                          const char *what, uint32_t startPc, uint64_t startCycles)
+    {
+        uint32_t slices = 1u;
+        while (ps2xVu1LastRunHitBudget() && slices < kVu1MaxSlices)
+        {
+            vu1.resume(memory.getVU1Code(), PS2_VU1_CODE_SIZE, memory.getVU1Data(), PS2_VU1_DATA_SIZE, gs, &memory,
+                       top, itop, kVu1Slice);
+            ++slices;
+        }
+        if (slices == 1u)
+            return;
+        const bool cut = ps2xVu1LastRunHitBudget();
+        static std::atomic<uint32_t> longRuns{0u};
+        const uint32_t n = longRuns.fetch_add(1u, std::memory_order_relaxed) + 1u;
+        if (n <= 16u || (n & 1023u) == 0u)
+            std::fprintf(stderr, "[vu1] %s 0x%04x (top %u) ran %llu VU cycles in %u slice(s) of %u: %s (long runs so far: %u)\n",
+                         what, startPc, top, static_cast<unsigned long long>(vu1.state().cycles - startCycles), slices,
+                         kVu1Slice, cut ? "STILL RUNNING at the cap, cut off; the next MSCAL restarts VU1 and the rest of this batch is lost"
+                                        : "finished (formerly cut off at the first slice)", n);
+    }
+}
+
 bool PS2Runtime::syncCoreSubsystems()
 {
     uint8_t *const rdram = m_memory.getRDRAM();
@@ -977,9 +1011,11 @@ bool PS2Runtime::syncCoreSubsystems()
                                      const uint32_t fbrst = onVuThread ? ps2x::asyncvif::currentFbrst() : cpuContext->vu0_fbrst;
                                      m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
+                                     const uint64_t vu1Start = m_vu1.state().cycles;
                                      m_vu1.execute(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                    m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                   m_gs, &m_memory, startPC, top, itop, 65536);
+                                                   m_gs, &m_memory, startPC, top, itop, kVu1Slice);
+                                     finishVu1Program(m_vu1, m_memory, m_gs, top, itop, "MSCAL", startPC, vu1Start);
                                      if (cpuContext)
                                          cpuContext->vu0_vpu_stat =
                                              (cpuContext->vu0_vpu_stat & ~0x0600u) |
@@ -1004,9 +1040,12 @@ bool PS2Runtime::syncCoreSubsystems()
                                      const uint32_t fbrst = onVuThread ? ps2x::asyncvif::currentFbrst() : cpuContext->vu0_fbrst;
                                      m_vu1.state().dBitEnabled = (fbrst & (1u << 10)) != 0u;
                                      m_vu1.state().tBitEnabled = (fbrst & (1u << 11)) != 0u;
+                                     const uint64_t vu1Start = m_vu1.state().cycles;
+                                     const uint32_t vu1Pc = m_vu1.state().pc;
                                      m_vu1.resume(m_memory.getVU1Code(), PS2_VU1_CODE_SIZE,
                                                   m_memory.getVU1Data(), PS2_VU1_DATA_SIZE,
-                                                  m_gs, &m_memory, top, itop, 65536);
+                                                  m_gs, &m_memory, top, itop, kVu1Slice);
+                                     finishVu1Program(m_vu1, m_memory, m_gs, top, itop, "MSCNT", vu1Pc, vu1Start);
                                      if (cpuContext)
                                          cpuContext->vu0_vpu_stat =
                                              (cpuContext->vu0_vpu_stat & ~0x0600u) |

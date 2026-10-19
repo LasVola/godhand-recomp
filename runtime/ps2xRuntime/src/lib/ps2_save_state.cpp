@@ -523,6 +523,7 @@ void EeScheduler::serializeMachine(Ar &ar)
     }
     if constexpr (Ar::kLoading)
     {
+        m_freeInvocationStacks.clear(); // see ee_scheduler.h: may lie below the loaded pool top
         bool legacyCallbackStacks = rt.m_asyncCallbackStackTop > ps2x::kernel_memory::kCallbackStackTop;
         for (const auto &[key, top] : m_invocationStackTops)
             legacyCallbackStacks = legacyCallbackStacks || top > ps2x::kernel_memory::kCallbackStackTop;

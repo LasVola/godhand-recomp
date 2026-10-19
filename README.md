@@ -1,15 +1,10 @@
 # God Hand Recompiled
 
 > [!WARNING]
-> **Work in progress. Only partly tested: stage 1, up to its fifth area (room r104).**
-> Played so far (October 18, 2026): stage 1 areas r100-r104, including the stage's first boss and the cutscenes
-> around it. Stage 2 and everything after it, the other bosses and the ending have not been played yet and may
-> crash or misbehave. Expect bugs. Bug reports with the log (`build\port\bin\logs\play_last.log`) are welcome.
->
-> **Known freeze:** pressing ○ **CHECK** on a defeated boss (seen in stage 1) froze the game. The cause was a bug in
-> the port's IOP/sound-driver emulation: a sound was stopped while the CRI driver was inside a protected section.
-> Fixes for both ways this could happen are included, but they have **not yet been confirmed in play**. If it still
-> freezes there, please report it.
+> **Work in progress. Tested through stage 2 and the start of stage 3.**
+> Played so far (October 18, 2026): all of stage 1 and stage 2 with their bosses and cutscenes, and the first area
+> of stage 3. Stage 3 onwards, the later bosses and the ending have not been played yet and may crash or misbehave.
+> Expect bugs. Bug reports with the log (`build\port\bin\logs\play_last.log`) are welcome.
 
 ![God Hand running natively, the title screen](assets/title-screen.png)
 
@@ -18,19 +13,35 @@
 God Hand was Clover Studio's last game and was only ever released on PS2. This project turns the game's own PS2 code
 into a Windows program using [PS2Recomp](https://github.com/ran-j/PS2Recomp). You supply your own copy of the game.
 
-## Status: work in progress, playable through stage 1 (area r104 so far)
+## Status: work in progress, playable through stage 2
 
-- **Tested: stage 1 only, areas r100-r104** (where testing is now). Fighting, the first boss, dying and continuing,
-  moving between areas, story cutscenes, the Clover logo movie, the casino minigames, **saving and loading** all work
-  in real play.
+- **Tested: stages 1 and 2 and the first area of stage 3.** Fighting, bosses, dying and continuing, moving between
+  areas, story cutscenes (including the sepia flashbacks), the Clover logo movie, the casino minigames, the God Reel,
+  **saving and loading** all work in real play.
 - **60 FPS at 3x resolution** (1536x1344, shown 4:3) on a modern GPU, cutscenes included. Windowed by default;
   F11 = full screen.
-- **PC controls:** keyboard, mouse buttons and controllers, all rebindable in game.
-- **Not tested yet:** stage 2 and later, the other bosses, the ending and its movies. All 81 of the game's code
-  overlays are converted, but not all have been played yet. Very heavy fights can cause tiny audio gaps, and the first
-  use of a new effect can pause the picture once for about 0.1 s while its GPU shader is built (it is cached after).
+- **PC controls:** keyboard, mouse buttons and controllers, all rebindable in game. **The game's button prompts show
+  the keys you bound** (for example ○ becomes "F"), switching to Xbox-style names when you play with a controller.
+- **Not tested yet:** stage 3 onwards, the later bosses, the ending and its movies. All 81 of the game's code
+  overlays are converted, but not all have been played yet.
+- **First start:** the GPU shaders are built and cached on first use. The very first start can take a couple of
+  minutes on a black screen, and new effects can pause the picture once for a moment the first time they appear.
+  Later starts and scenes are cached.
 
-**Recent fixes (October 18, 2026):**
+**Fixes (October 18, 2026, later the same day):**
+- Sound cutting out (5-11 ms gaps in music and voices, worst in stage 2 and the God Reel): the EE's SIF DMA status
+  reported every transfer as still busy one frame too long, which starved the CRI ADX stream. Fixed.
+- Grid of lines over the sepia flashback cutscenes and a thin line under movies at 3x: two GPU texture-sampling fixes
+  that match the PS2's filtering exactly.
+- The game could close while saving after about 30 minutes of play (a stack pool for game threads was never reused).
+- Boss ○ CHECK freeze (stage 1): not seen again since the fixes, through two stages of play.
+- Controls: Start/Select no longer reach the game during the Back+Start shortcut; Alt+Tab is no longer recorded as a
+  binding; keys bound to two buttons are flagged on the F1 screen; the Windows Sticky Keys popup no longer appears
+  while playing.
+- Rare 3D geometry loss when the stage clipping program runs long, and a watchdog so the ending credits cannot hang
+  if a movie stalls.
+
+**Earlier fixes (October 18, 2026):**
 - Boss ○ CHECK freeze, second cause: a "stop sound" request from the game could interrupt the CRI sound mixer
   mid-mix. Like on a PS2, such requests now wait until no higher-priority sound thread is ready.
 - Slow cutscenes (15-30 FPS): some cutscenes use VU1 microprograms that were not compiled ahead of time. The port now

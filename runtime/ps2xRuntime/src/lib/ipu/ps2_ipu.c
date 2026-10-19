@@ -817,6 +817,7 @@ static void ipu_run(u32 cmd) {
 u32 ps2_ipu_want(void) { return ipu_need_qw; }
 
 u32 ps2_ipu_out_pos(void) { return out_pos; }
+u64 ps2_ipu_macroblocks(void) { return stat_mb; } /* decoded macroblocks so far (movie watchdog, sweep R3) */
 
 u32 ps2_ipu_out_avail(void) {
     return out_len > out_pos ? (out_len - out_pos) / 16u : 0u;

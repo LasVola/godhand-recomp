@@ -27,6 +27,9 @@
 
 namespace
 {
+    // Sweep R2: true when the last VU1 run on this thread stopped only because its cycle budget ran out: the
+    // microprogram has not reached its E bit and resume() continues it exactly where it stopped.
+    thread_local bool t_vu1BudgetHit = false;
     uint64_t fnv1a64(const uint8_t *data, size_t size)
     {
         uint64_t hash = 0xCBF29CE484222325ull;
@@ -1467,6 +1470,8 @@ bool VU1InterpreterAccess::runLoopWith(VU1Interpreter &vu, uint8_t *vuCode, uint
         vu.m_pendingHaltD = false;
         vu.m_pendingHaltT = false;
     }
+    if (vu.m_unit == VU1Interpreter::Unit::VU1)
+        t_vu1BudgetHit = !programEnded && !vu.m_stopRequested && vu.m_cycle >= budgetEnd;
     vu.m_state.cycles = vu.m_cycle;
     if (changeRounding)
         _mm_setcsr((_mm_getcsr() & ~0x6000u) | (previousCsr & 0x6000u));
@@ -1831,4 +1836,10 @@ void loadVuState(VU1Interpreter &vu, ps2x::state::Reader &in)
 void ps2xRequestVu1Trace(uint32_t fields)
 {
     g_vu1TraceRequestFields.store(fields, std::memory_order_release);
+}
+
+// Sweep R2 (ps2_runtime.cpp MSCAL/MSCNT callbacks).
+bool ps2xVu1LastRunHitBudget()
+{
+    return t_vu1BudgetHit;
 }

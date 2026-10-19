@@ -516,8 +516,63 @@ namespace ps2x::iop::detail
             }
 
             if (!tracePcs.empty() && std::find(tracePcs.begin(), tracePcs.end(), cpu.pc) != tracePcs.end())
+            {
                 std::fprintf(stderr, "[iop-pc] %06x a0=%08x a1=%08x a2=%08x a3=%08x ra=%06x sp=%06x cycle=%llu\n", cpu.pc, cpu.gpr[4],
                              cpu.gpr[5], cpu.gpr[6], cpu.gpr[7], cpu.gpr[31], cpu.gpr[29], static_cast<unsigned long long>(totalCycles));
+                // PS2X_IOP_TRACE_REGS=1: also v0 (a value just returned) and s0/s1 at each hit.
+                static const bool traceRegs = [] { const char *v = std::getenv("PS2X_IOP_TRACE_REGS"); return v && *v == '1'; }();
+                if (traceRegs)
+                    std::fprintf(stderr, "[iop-regs] %06x v0=%08x s0=%08x s1=%08x\n", cpu.pc, cpu.gpr[2], cpu.gpr[16], cpu.gpr[17]);
+                // PS2X_IOP_TRACE_MEM=<base>:<stride>:<count>:<off>[/<off>...] (hex): with each trace-pc hit, print the
+                // words at base+i*stride+off for the count entries of a table, skipping entries whose first word is 0
+                // (e.g. CRI's SJRBF pool 3ef50:40:80:4/c/10/20 = used, data bytes, free bytes, size).
+                static const std::vector<uint32_t> traceMem = []
+                {
+                    std::vector<uint32_t> fields;
+                    if (const char *spec = std::getenv("PS2X_IOP_TRACE_MEM"))
+                    {
+                        std::string text(spec);
+                        for (char &c : text)
+                            if (c == ':' || c == '/')
+                                c = ' ';
+                        std::istringstream in(text);
+                        std::string token;
+                        while (in >> token)
+                            fields.push_back(static_cast<uint32_t>(std::stoul(token, nullptr, 16)));
+                    }
+                    return fields.size() >= 4u ? fields : std::vector<uint32_t>{};
+                }();
+                // PS2X_IOP_TRACE_ARGMEM=<gpr>:<words> (decimal): also print that many words at the address in that register.
+                static const std::pair<uint32_t, uint32_t> argMem = []
+                {
+                    unsigned reg = 0u, words = 0u;
+                    if (const char *spec = std::getenv("PS2X_IOP_TRACE_ARGMEM"))
+                        if (std::sscanf(spec, "%u:%u", &reg, &words) != 2 || reg >= 32u)
+                            words = 0u;
+                    return std::pair<uint32_t, uint32_t>{reg, std::min(words, 16u)};
+                }();
+                if (argMem.second != 0u)
+                {
+                    std::fprintf(stderr, "[iop-argmem] %06x", cpu.pc);
+                    for (uint32_t i = 0; i < argMem.second; ++i)
+                        std::fprintf(stderr, " %08x", memory.read32(cpu.gpr[argMem.first] + i * 4u));
+                    std::fputc('\n', stderr);
+                }
+                if (!traceMem.empty())
+                {
+                    std::fprintf(stderr, "[iop-mem] %06x", cpu.pc);
+                    for (uint32_t i = 0; i < traceMem[2]; ++i)
+                    {
+                        const uint32_t entry = traceMem[0] + i * traceMem[1];
+                        if (memory.read32(entry + traceMem[3]) == 0u)
+                            continue;
+                        std::fprintf(stderr, " %x:", i);
+                        for (size_t f = 3u; f < traceMem.size(); ++f)
+                            std::fprintf(stderr, "%s%x", f == 3u ? "" : ",", memory.read32(entry + traceMem[f]));
+                    }
+                    std::fputc('\n', stderr);
+                }
+            }
 
             // Import stubs start with "jr ra"; decode (a search back for the import table) only runs on those.
             const auto import = memory.read32(cpu.pc) == 0x03E00008u ? imports.decode(cpu.pc) : std::nullopt;
@@ -909,7 +964,10 @@ namespace ps2x::iop::detail
                 // Counting it made the IOP stop afterwards until the EE caught up: a memory card save runs ~10 s of
                 // IOP time in ~3 s, then PADMAN sat idle for ~10 s (no input after "Save complete").
                 if (eeSyncCycle <= blockedStart)
+                {
                     eeSyncCycle += totalCycles - blockedStart;
+                    creditedCycles += totalCycles - blockedStart;
+                }
                 kernel.setCurrentThread(previous);
                 if (!kernel.threadFinished(id))
                 {
@@ -1418,6 +1476,8 @@ namespace ps2x::iop::detail
         uint64_t totalInstructions = 0;
         int64_t eeCycleCarry = 0;
         uint64_t eeSyncCycle = 0;
+        uint64_t creditedCycles = 0; // PS2X_IOP_CLOCK_LOG: IOP time run while the EE waited on a blocked RPC server
+        uint64_t eeCyclesFed = 0;    // PS2X_IOP_CLOCK_LOG: EE cycles handed to runEeCycles
         CpuState *activeCpu = nullptr;
         std::string lastError;
         bool servicingDmaInterrupts = false;
@@ -1460,6 +1520,23 @@ namespace ps2x::iop::detail
     {
         m_impl->accountEeCycles();
         m_impl->eeCycleCarry += static_cast<int64_t>(eeCycles);
+        // PS2X_IOP_CLOCK_LOG=1: every ~5 s of IOP time, IOP time vs the EE time fed to it and the IOP time credited
+        // while the EE waited on a blocked RPC server (IOP ahead of the EE by that much).
+        static const bool clockLog = [] { const char *v = std::getenv("PS2X_IOP_CLOCK_LOG"); return v && *v == '1'; }();
+        if (clockLog)
+        {
+            m_impl->eeCyclesFed += eeCycles;
+            static uint64_t nextLog = 0u;
+            if (m_impl->totalCycles >= nextLog)
+            {
+                nextLog = m_impl->totalCycles + kIopClockHz * 5u;
+                std::fprintf(stderr, "[iop-clock] iop %.4f s ee %.4f s credited %.4f s carry %lld\n",
+                             static_cast<double>(m_impl->totalCycles) / kIopClockHz,
+                             static_cast<double>(m_impl->eeCyclesFed) / (kIopClockHz * 8.0),
+                             static_cast<double>(m_impl->creditedCycles) / kIopClockHz,
+                             static_cast<long long>(m_impl->eeCycleCarry));
+            }
+        }
         if (m_impl->eeCycleCarry < static_cast<int64_t>(kIopBatchCycles * 8u))
             return;
         m_impl->runCycles(static_cast<uint64_t>(m_impl->eeCycleCarry) / 8u);

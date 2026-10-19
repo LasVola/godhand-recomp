@@ -4,6 +4,7 @@
 
 #include "ps2_runtime.h"
 #include "runtime/ee_scheduler.h"
+#include "runtime/ps2_pnach.h"
 
 #include <algorithm>
 #include <atomic>
@@ -300,6 +301,51 @@ namespace godhand::hangdump
         }
     }
 
+    namespace
+    {
+        // Stall catcher (2026-10-18, user: "a few small freezes in the cutscene and the boss fight" with the EE only
+        // 36-64% busy, so something blocks it). The EE thread stamps every vblank it processes; a watchdog thread
+        // prints every thread's native stack once when no vblank came for GODHAND_STALL_DUMP milliseconds, and how long
+        // the stall lasted when the next vblank arrives. At most 12 dumps, 5 s apart.
+        std::atomic<int64_t> g_lastVblankNs{0};
+
+        int64_t steadyNs()
+        {
+            return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        }
+
+        void runStallCatcher(int64_t thresholdMs)
+        {
+            const int64_t threshold = thresholdMs * 1000000;
+            int dumps = 0;
+            int64_t lastDump = 0;
+            int64_t dumpedStallFrom = 0; // the vblank stamp the open stall started from, 0 = none
+            for (;;)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+                const int64_t last = g_lastVblankNs.load(std::memory_order_relaxed);
+                if (last == 0)
+                    continue;
+                const int64_t now = steadyNs();
+                if (dumpedStallFrom != 0 && last != dumpedStallFrom)
+                {
+                    std::fprintf(stderr, "[stall-dump] #%d ended: no EE vblank for %lld ms in total\n", dumps,
+                                 static_cast<long long>((last - dumpedStallFrom) / 1000000));
+                    std::fflush(stderr);
+                    dumpedStallFrom = 0;
+                }
+                if (now - last < threshold || dumpedStallFrom != 0 || dumps >= 12 || (lastDump != 0 && now - lastDump < 5000000000))
+                    continue;
+                ++dumps;
+                lastDump = now;
+                dumpedStallFrom = last;
+                std::fprintf(stderr, "[stall-dump] #%d: no EE vblank for %lld ms; stacks of every thread follow\n", dumps,
+                             static_cast<long long>((now - last) / 1000000));
+                dumpAllThreads();
+            }
+        }
+    }
+
     void dumpNow(bool nativeStacks)
     {
         if (nativeStacks)
@@ -443,6 +489,13 @@ namespace godhand::hangdump
 
     void startFromEnvironment()
     {
+        if (const char *stall = std::getenv("GODHAND_STALL_DUMP"); stall && std::atoi(stall) > 0)
+        {
+            const int64_t thresholdMs = std::atoi(stall);
+            ps2x::pnach::addFrameHook([] { g_lastVblankNs.store(steadyNs(), std::memory_order_relaxed); });
+            std::thread(runStallCatcher, thresholdMs).detach();
+            std::fprintf(stderr, "[stall-dump] on: thread stacks when no EE vblank comes for %lld ms\n", static_cast<long long>(thresholdMs));
+        }
         if (const char *spec = std::getenv("GODHAND_SAMPLE_PROFILE"); spec && *spec)
         {
             double from = 0.0, to = 0.0;

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <cstdlib>
 #include <cstring>
@@ -51,6 +52,7 @@ namespace ps2_host_gamepads
             SDL_JoystickID id = 0;
 #endif
             std::string name;
+            Style style = Style::Unknown; // from the name, set with it
             Motors wanted;
             Motors sent;
             std::chrono::steady_clock::time_point sentAt;
@@ -58,6 +60,21 @@ namespace ps2_host_gamepads
 
         std::array<Device, kMaxDevices> g_devices;
         bool g_sdl = false; // SDL is open and owns the devices; false = GLFW's gamepads
+
+        // GLFW's names come from SDL_GameControllerDB ("PS4 Controller", "PS5 Controller", "Xbox Controller",
+        // "XInput Gamepad (GLFW)"); SDL3's SDL_GetGamepadName gives the same kind of names.
+        Style styleFromName(const std::string &name)
+        {
+            std::string lower(name);
+            for (char &ch : lower)
+                ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            auto has = [&](const char *part) { return lower.find(part) != std::string::npos; };
+            if (has("playstation") || has("dualshock") || has("dualsense") || has("sony") || has("ps3") || has("ps4") || has("ps5"))
+                return Style::PlayStation;
+            if (has("xbox") || has("x-box") || has("xinput"))
+                return Style::Xbox;
+            return Style::Unknown;
+        }
 
         // The GLFW gamepad button for each Button (-1: GLFW has no such button).
         constexpr std::array<int, ButtonCount> kGlfwButtons{0, 1, 2, 3, 6, 8, 7, 9, 10, 4, 5, 11, 13, 14, 12, -1, -1, -1, -1, -1, -1};
@@ -98,6 +115,7 @@ namespace ps2_host_gamepads
             device.id = id;
             const char *name = SDL_GetGamepadName(gamepad);
             device.name = name ? name : "Controller";
+            device.style = styleFromName(device.name);
             std::cerr << "[input] SDL-" << slot << ": " << device.name << std::endl;
         }
 
@@ -160,12 +178,14 @@ namespace ps2_host_gamepads
                 {
                     const char *name = glfwGetGamepadName(i);
                     device.name = name ? name : "Controller";
+                    device.style = styleFromName(device.name);
                     std::cerr << "[input] SDL-" << i << " (GLFW gamepad " << i << "): " << device.name << std::endl;
                 }
                 else if (!present && !device.name.empty())
                 {
                     std::cerr << "[input] SDL-" << i << " disconnected: " << device.name << std::endl;
                     device.name.clear();
+                    device.style = Style::Unknown;
                 }
             }
         }
@@ -276,5 +296,13 @@ namespace ps2_host_gamepads
             if (connected(i))
                 list.push_back({i, g_devices[static_cast<size_t>(i)].name});
         return list;
+    }
+
+    Style style(int device)
+    {
+        // Cleared when the controller goes (SDL at once, GLFW within the 1-s name scan): no extra poll per call.
+        if (device < 0 || device >= kMaxDevices)
+            return Style::Unknown;
+        return g_devices[static_cast<size_t>(device)].style;
     }
 }
