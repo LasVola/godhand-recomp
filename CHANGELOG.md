@@ -2,6 +2,18 @@
 
 Newest first. Each fix is commented in the code where it was made.
 
+## October 20, 2026
+
+- **Minigames show the proper buttons:** the crates in the pirate ship cannon minigame (stage 3) showed the PS2
+  symbols. They now show your bound keys, or A/B/X/Y on an Xbox-style controller, and switch the moment you change
+  between keyboard and controller (`src/godhand/crate_prompts.cpp`, `src/godhand/button_prompts.cpp`). A PlayStation
+  controller keeps the original symbols.
+- **Sound cutting out in stage 3:** the same kind of gap as in stage 2 (the streamed music reaching the sound
+  processor late). Data transfers to the sound side are now reported finished after a short, PCSX2-like delay
+  (`Kernel/Stubs/SIF.cpp`). Not heard in the next play session. New log lines (`[sif-dma]`, `[spu2-adma]`) show it if it comes back.
+- Note for developers: `GODHAND_STALL_DUMP` pauses the game itself for up to about 1.5 s each time it fires (it loads
+  the debug symbols). Use it only to catch a freeze, not during normal play.
+
 ## October 19, 2026
 
 - **"Heat wave" ripples in cutscenes** (stage 3): the game's depth-of-field blur on the far background was drawn

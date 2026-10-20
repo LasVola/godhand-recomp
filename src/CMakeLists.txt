@@ -33,6 +33,7 @@ set(GODHAND_HOST_SOURCES
     main.cpp
     godhand/button_prompt_sheets.cpp
     godhand/button_prompts.cpp
+    godhand/crate_prompts.cpp
     godhand/call_profile.cpp
     godhand/call_trace.cpp
     godhand/movie_watchdog.cpp

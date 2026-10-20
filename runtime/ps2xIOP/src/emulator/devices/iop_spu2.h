@@ -116,6 +116,7 @@ namespace ps2x::iop::detail
         void decodeBlock(uint32_t core, uint32_t voice, uint32_t address);
         std::array<int32_t, 2> mixCore(uint32_t core, const std::array<int32_t, 2> &external);
         void reportSilentDrop(const std::array<int32_t, 2> &core0, const std::array<int32_t, 2> &output);
+        void reportAdmaBlock(uint32_t core, const int16_t *left, const int16_t *right);
         std::array<int32_t, 2> reverbFrame(uint32_t core, const std::array<int32_t, 2> &wet);
         std::array<int32_t, 2> admaSample(uint32_t core);
 

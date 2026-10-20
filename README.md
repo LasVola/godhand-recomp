@@ -3,7 +3,7 @@
 **God Hand (PS2, 2006) running natively on PC. Not an emulator: the game's own code, rebuilt as a Windows program.**
 
 > [!WARNING]
-> **Work in progress.** Tested from the start of the game into stage 3, past the Gorilla Mask boss fight, played
+> **Work in progress.** Tested from the start of the game into stage 3, past the Gorilla Mask and Mad Midget Five boss fights, played
 > side by side with the original game on a real PlayStation 2 (the tester's own console and disc).
 > The rest of stage 3, later stages, the final bosses and the ending have not been played yet. Expect bugs, and please report them
 > (see [Reporting bugs](#reporting-bugs)).
@@ -14,7 +14,7 @@ You need your own copy of the game (God Hand, USA version). **No game files are 
 
 ---
 
-## Progress (last updated October 19, 2026)
+## Progress (last updated October 20, 2026)
 
 How far the game has been played on this port so far (each part compared side by side with a real PS2):
 
@@ -23,7 +23,7 @@ How far the game has been played on this port so far (each part compared side by
 | Opening, title menu, Clover logo movie | ✅ Played |
 | Stage 1 (all areas and the boss) | ✅ Played |
 | Stage 2 (all areas, the sepia flashback, the boss) | ✅ Played |
-| Stage 3 (the amusement park) | 🟡 Through area 5, Gorilla Mask beaten |
+| Stage 3 (the amusement park) | 🟡 Gorilla Mask and Mad Midget Five beaten |
 | Stages 4 to 8 and their bosses | ⬜ Not played yet |
 | Ending and credits | ⬜ Not played yet |
 | Coliseum and the other extras | ⬜ Not played yet |
@@ -36,6 +36,7 @@ How far the game has been played on this port so far (each part compared side by
 | Story cutscenes | ✅ Works |
 | Saving and loading (memory card) | ✅ Works |
 | Casino minigames | ✅ Works |
+| Pirate ship cannon minigame (shows your buttons) | ✅ Works |
 | Movies other than the Clover logo (ending, staff roll, trailers) | ⬜ Not seen yet |
 
 ---
@@ -43,12 +44,16 @@ How far the game has been played on this port so far (each part compared side by
 ## What works
 
 - **The game itself:** fighting, bosses, dying and continuing, story cutscenes and movies, the casino, the God Reel,
-  saving and loading. Tested through stage 2 and stage 3 up to area 5 (past Gorilla Mask).
+  saving and loading. Tested through stage 2 and stage 3 past Gorilla Mask and the Mad Midget Five.
 - **60 FPS at 3x resolution** (1536x1344, shown in the original 4:3) on a modern graphics card.
 - **Windowed or full screen** (F11).
 - **Keyboard, mouse and controllers**, all rebindable in game with **F1**.
 - **Button prompts show your keys:** if "Action" is on the F key, the game shows "F" instead of the PS2 circle.
-  With a controller it shows Xbox-style names (A, B, X, Y...).
+  With an Xbox-style controller it shows A, B, X, Y; a PlayStation controller keeps the PS2 symbols.
+- **Minigames show the proper buttons too:** the crates in the pirate ship cannon minigame show the buttons you
+  actually press. Prompts switch the moment you change between keyboard and controller.
+
+![The pirate ship cannon minigame with a PlayStation controller, the keyboard and an Xbox-style controller](assets/minigame-buttons.jpg)
 
 ## Known issues
 

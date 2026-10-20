@@ -137,7 +137,8 @@ namespace ps2_stubs
         struct FreshSifDma
         {
             uint32_t id = 0u;
-            uint64_t busyUntilCycle = 0u; // EE cycle at which the transfer would have finished on hardware
+            uint64_t issueCycle = 0u;
+            uint64_t bytes = 0u;
         };
         std::array<FreshSifDma, kSifDmaFreshIdSlots> g_sifDmaFreshIds{};
         uint32_t g_sifDmaFreshIdNext = 0u;
@@ -152,6 +153,22 @@ namespace ps2_stubs
         // ran 1/129 short of 48 kHz and the PSM mixer filled a 256/512-sample unit with exact zeros twice every 2.75 s
         // of title music (in play every ~0.4 s: "sound cuts out"). 2026-10-18, port_prep/adx_gaps/EXPERIMENTS.md:
         // 28 -> 0 zero bursts per 50 s boot. PS2X_SIF_DMA_BUSY=0: old behaviour.
+        // 2026-10-19: the same exact-zero stream drops came back in stage 3 (7 in 12 s, core 1 ADMA only). The window
+        // is now PCSX2-like, 20,000 cycles + 4 per byte (68 us + ~74 MB/s); the IRX loader's poll in the next
+        // instructions still sees it queued. A first poll that the 2 ms rule would have answered "in progress" is
+        // logged ([sif-dma], at most 40). PS2X_SIF_DMA_SLOW=1: the 2 ms rule.
+        bool sifDmaSlowWindow()
+        {
+            static const bool slow = [] { const char *v = std::getenv("PS2X_SIF_DMA_SLOW"); return v && *v == '1'; }();
+            return slow;
+        }
+
+        uint64_t sifDmaBusyCycles(uint64_t bytes, bool slow)
+        {
+            const uint64_t clamped = std::min<uint64_t>(bytes, 1u << 20);
+            return slow ? 600000u + clamped * 32u : 20000u + clamped * 4u;
+        }
+
         bool sifDmaBusyWindow()
         {
             static const bool enabled = [] { const char *v = std::getenv("PS2X_SIF_DMA_BUSY"); return !(v && *v == '0'); }();
@@ -166,10 +183,7 @@ namespace ps2_stubs
             {
                 id = g_nextSifDmaTransferId++;
             }
-            constexpr uint64_t kSifDmaSetupCycles = 600000u;
-            constexpr uint64_t kSifDmaCyclesPerByte = 32u;
-            g_sifDmaFreshIds[g_sifDmaFreshIdNext++ % kSifDmaFreshIdSlots] =
-                FreshSifDma{id, cycle + kSifDmaSetupCycles + std::min<uint64_t>(bytes, 1u << 20) * kSifDmaCyclesPerByte};
+            g_sifDmaFreshIds[g_sifDmaFreshIdNext++ % kSifDmaFreshIdSlots] = FreshSifDma{id, cycle, bytes};
             return id;
         }
 
@@ -185,7 +199,18 @@ namespace ps2_stubs
                 if (slot.id == id)
                 {
                     slot.id = 0u;
-                    return !sifDmaBusyWindow() || cycle < slot.busyUntilCycle;
+                    if (!sifDmaBusyWindow())
+                        return true;
+                    const uint64_t elapsed = cycle > slot.issueCycle ? cycle - slot.issueCycle : 0u;
+                    const bool busy = elapsed < sifDmaBusyCycles(slot.bytes, sifDmaSlowWindow());
+                    static uint32_t logsLeft = 40u;
+                    if (!busy && logsLeft != 0u && elapsed < sifDmaBusyCycles(slot.bytes, true))
+                    {
+                        --logsLeft;
+                        std::fprintf(stderr, "[sif-dma] %llu-byte transfer polled %.2f ms after issue: done (the 2 ms rule said in progress)\n",
+                                     static_cast<unsigned long long>(slot.bytes), static_cast<double>(elapsed) / 294912.0);
+                    }
+                    return busy;
                 }
             }
             return false;

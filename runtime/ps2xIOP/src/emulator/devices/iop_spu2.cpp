@@ -138,6 +138,8 @@ namespace ps2x::iop::detail
         uint32_t g_statNonZero = 0u;
         uint32_t g_statVoiceNonZero = 0u;
         uint32_t g_statReverbNonZero = 0u;
+        // Samples per core for which the streamed (ADMA) block was late and the last sample was held.
+        uint32_t g_admaLateRun[2] = {};
 
         // When an ADMA block's data is read from IOP RAM (docs/PROGRESS.md §94). The sound driver (the CRI library)
         // refills the buffer right behind the hardware, so the moment matters: the SPU2 has a two-half input buffer and
@@ -422,15 +424,31 @@ namespace ps2x::iop::detail
                 // hardware keeps playing what is in its buffer, so hold the last sample of the previous block instead
                 // (docs/PROGRESS.md §92). PS2X_ADMA_HOLD=0 goes back to silence.
                 static const bool hold = [] { const char *v = std::getenv("PS2X_ADMA_HOLD"); return !(v && *v == '0'); }();
+                if (autoDma(core))
+                    ++g_admaLateRun[core & 1u];
                 if (hold && adma.source)
                     return {adma.left[255], adma.right[255]};
                 return {0, 0};
+            }
+            // God Hand 2026-10-19 (user: music "cut out or crackled" in stage 3, no host-side gap): log streamed
+            // blocks that came 1 ms or more late; until then the last sample was held, heard as a cut-out or click.
+            if (const uint32_t late = g_admaLateRun[core & 1u]; late != 0u)
+            {
+                g_admaLateRun[core & 1u] = 0u;
+                static uint32_t logsLeft = 40u;
+                if (late >= 48u && logsLeft != 0u)
+                {
+                    --logsLeft;
+                    std::fprintf(stderr, "[spu2-adma] core %u stream block %u samples (%.1f ms) late at t=%.3f s; last sample held\n",
+                                 core, late, static_cast<double>(late) / 48.0, static_cast<double>(m_cycle) / (768.0 * 48000.0));
+                }
             }
             const uint8_t *block = adma.source + adma.position;
             if (const uint8_t *staged = stagedAdmaBlock(core, adma.source, adma.position))
                 block = staged;
             std::memcpy(adma.left.data(), block, 0x200u);
             std::memcpy(adma.right.data(), block + 0x200u, 0x200u);
+            reportAdmaBlock(core & 1u, adma.left.data(), adma.right.data());
             // PS2X_ADMA_DUMP=<file>: every ADMA block as it is played, s16le stereo per core (core in the low bit of
             // a 4-byte header per block: 'A', core, 0, 0, then 256 left/right sample pairs).
             static std::FILE *admaDump = []() -> std::FILE *
@@ -571,6 +589,50 @@ namespace ps2x::iop::detail
                      reg(kCoreStride + 0x198u), reg(s0), reg(s0 + 2u), reg(s1), reg(s1 + 2u), reg(s0 + 4u), reg(s0 + 6u),
                      reg(s1 + 4u), reg(s1 + 6u), reg(s1 + 8u), reg(s1 + 10u), reg(s1 + 12u), reg(s1 + 14u), core0[0], core0[1],
                      sounding[0], sounding[1], autoDma(0u) ? 1u : 0u, autoDma(1u) ? 1u : 0u);
+    }
+
+    // God Hand 2026-10-19: the mix dropped to exact 0 after loud sound with only the core 1 stream (ADMA) playing and
+    // no block late, so the stream itself delivered silence. Log what the stream gives: runs of all-zero blocks right
+    // after loud ones (with their length; seconds = a track change), and non-zero blocks equal to one of the last 64
+    // (a stale buffer played again, heard as a stutter or crackle). At most 60 lines.
+    void IopSpu2::reportAdmaBlock(uint32_t core, const int16_t *left, const int16_t *right)
+    {
+        static uint32_t logsLeft = 60u;
+        static uint32_t zeroRun[kCores] = {};
+        static bool loud[kCores] = {};
+        static std::array<std::array<uint64_t, 64>, kCores> recent{};
+        static uint32_t recentNext[kCores] = {};
+        const double seconds = static_cast<double>(m_cycle) / (768.0 * 48000.0);
+        int32_t peak = 0;
+        uint64_t hash = 1469598103934665603ull;
+        for (uint32_t i = 0; i < 256u; ++i)
+        {
+            peak = std::max({peak, std::abs(static_cast<int32_t>(left[i])), std::abs(static_cast<int32_t>(right[i]))});
+            hash = (hash ^ static_cast<uint16_t>(left[i])) * 1099511628211ull;
+            hash = (hash ^ static_cast<uint16_t>(right[i])) * 1099511628211ull;
+        }
+        if (peak == 0)
+        {
+            if (loud[core])
+                ++zeroRun[core];
+            return;
+        }
+        if (zeroRun[core] != 0u && logsLeft != 0u)
+        {
+            --logsLeft;
+            std::fprintf(stderr, "[spu2-adma] core %u stream gave %u silent blocks (%.1f ms) after loud audio, ending at t=%.3f s\n", core,
+                         zeroRun[core], static_cast<double>(zeroRun[core]) * 256.0 / 48.0, seconds);
+        }
+        zeroRun[core] = 0u;
+        loud[core] = peak >= 1500;
+        if (peak >= 64 && logsLeft != 0u &&
+            std::find(recent[core].begin(), recent[core].end(), hash) != recent[core].end())
+        {
+            --logsLeft;
+            std::fprintf(stderr, "[spu2-adma] core %u stream block repeats one of the last 64 (peak %d) at t=%.3f s\n", core, peak,
+                         seconds);
+        }
+        recent[core][recentNext[core]++ & 63u] = hash;
     }
 
     void IopSpu2::flushAudio()
